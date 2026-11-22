@@ -14,7 +14,7 @@ Armaxcoin enforces strict separation between public peer-to-peer transport and l
 | **Mainnet (`ARMX-MAINNET-1`)** | `19334` (TCP) | `127.0.0.1:19332` | `~/.armax/mainnet` |
 | **Regtest (`ARMX-REGTEST-1`)** | Dynamic / Configurable | Dynamic / Configurable | Custom / In-Memory |
 
-> [!CRITICAL]
+> [!CAUTION]
 > **RPC Isolation Policy:**  
 > The JSON-RPC service exposes administrative endpoints (block submission, peer mutation, mining templates). It **MUST NEVER** be bound to `0.0.0.0` or exposed directly to the public internet without an authenticated reverse proxy and TLS. The daemon rejects public binding unless strong HTTP Basic Auth and TLS credentials are explicitly provided.
 

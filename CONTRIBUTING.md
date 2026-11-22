@@ -1,8 +1,10 @@
 # Contributing to Armaxcoin (`armax-coin`)
 
-Thank you for your interest in contributing to Armaxcoin. Armaxcoin is an experimental Layer-1 Proof-of-Work blockchain incorporating NIST FIPS 204 post-quantum digital signatures (ML-DSA-65) and the ArmaxHash v2 Stream-Fast algorithm.
+Thank you for your interest in contributing to Armaxcoin. **Armaxcoin is an open-source community project**, not a closed organization. Whether you are fixing a typo, reporting a bug, testing a release, running a node/miner, or hardening post-quantum consensus code, **everyone is welcome to participate without formal membership or prior appointment**.
 
-Because consensus-critical systems require meticulous attention to correctness, determinism, and security, all contributions must adhere to the engineering standards and quality gates described in this guide.
+See something that can be improved? **Join the discussion, report it, or send a Pull Request.**
+
+At the same time, because Armaxcoin is an experimental Layer-1 Proof-of-Work blockchain incorporating NIST FIPS 204 ML-DSA-65 signatures and ArmaxHash v2, code affecting consensus, cryptography, P2P security, or wallets follows strict testing and review safeguards.
 
 ---
 
@@ -22,6 +24,8 @@ All contributors and community participants are expected to adhere to our [Code 
 
 ## 3. Getting Started
 
+*(Required only if you plan to build and test Go code locally. For documentation, typo, or template PRs, feel free to skip local Go setup and edit directly via fork + Pull Request.)*
+
 ### Prerequisites
 
 - **Go:** Version **1.27 or higher** (strict requirement due to standard library `crypto/mldsa` post-quantum support).
@@ -30,7 +34,7 @@ All contributors and community participants are expected to adhere to our [Code 
   - Linux (`amd64`, `arm64`)
   - Windows 10/11 / Windows Server (`amd64`)
   - macOS Apple Silicon (`arm64`)
-- **Linters & Tooling (Optional for local development, enforced in CI):**
+- **Linters & Tooling (Optional locally, run automatically in CI):**
   - `staticcheck` (pinned version v0.8.2)
   - `govulncheck` (pinned version v1.9.0)
 
@@ -54,18 +58,27 @@ go test -count=1 ./...
 
 ## 4. Development Workflow & Guidelines
 
+### Lightweight Contribution Workflow
+
+1. **Explore the project and existing docs:** Start with [`README.md`](README.md) and [`docs/README.md`](docs/README.md) to see how things work today.
+2. **Discuss larger changes when useful:** For major features or protocol ideas, open an issue or GitHub Discussion first so maintainers can check scope and compatibility early. *(Formal pre-approval is not required for bug fixes or documentation improvements.)*
+3. **Open an Issue for reproducible bugs:** Use the bug report template with logs, version, and steps to reproduce *(never post security exploits publicly)*.
+4. **Fork and submit a Pull Request:** Create a focused topic branch in your fork, add tests if modifying code, sign off your commits (`git commit -s`), and open a PR against `main`.
+5. **Automated CI runs checks:** GitHub Actions runs build, test, race detection, linting, and hygiene checks automatically on every PR.
+6. **Proportional maintainer review & merge:** Maintainers review proportionally to change risk, share feedback, and merge accepted changes.
+
 ### Branching Strategy
 
-1. Fork the repository on GitHub.
+1. Fork the repository on GitHub (no upstream `Write` access or GitHub Org membership is needed).
 2. Create a focused topic branch from `main`:
    ```bash
    git checkout -b feature/my-feature-name
    ```
-3. Keep commits atomic, well-scoped, and accompanied by corresponding tests.
+3. Keep commits atomic, well-scoped, and accompanied by tests when modifying Go code.
 
 ### Commit Conventions
 
-All commit messages must be written in English and follow [Conventional Commits](https://www.conventionalcommits.org/):
+Commit messages should be written clearly in English following [Conventional Commits](https://www.conventionalcommits.org/) where practical:
 
 - `feat:` A new feature or user-facing functionality.
 - `fix:` A bug fix or defect resolution.
@@ -95,9 +108,12 @@ Any change to packages `core/`, `armaxhash/`, or consensus-critical logic in `no
 
 ---
 
-## 5. Mandatory Verification Gates
+## 5. Verification Gates
 
-Before submitting a Pull Request, you must run and pass all verification gates:
+Verification expectations match the scope of your change:
+
+- **Documentation / Typo / Template PRs:** Confirm relative links are accurate and follow `markdown` conventions—**you do not need to run full local Go test suites or install linters**, as automated CI validates repository hygiene.
+- **Go Code / Build / CI Changes:** Run the relevant verification checks locally before submitting (CI executes the full suite across platforms):
 
 ```bash
 # 1. Formatting
@@ -112,10 +128,10 @@ go test -tags testhooks -count=1 -timeout 300s ./...
 # 4. Personal Data & Repository Hygiene Gate
 go test -v -run TestNoPersonalDataInTree .
 
-# 5. Static Analysis (if installed)
+# 5. Static Analysis (if installed locally)
 staticcheck -tags testhooks ./...
 
-# 6. Known Vulnerability Check (if installed)
+# 6. Known Vulnerability Check (if installed locally)
 govulncheck ./...
 ```
 
@@ -123,13 +139,18 @@ govulncheck ./...
 
 ## 6. Pull Request Review Process
 
-1. **Automated CI:** Every PR triggers `.github/workflows/ci.yml`, running vet, race detection, cross-compilation for Linux and Windows, static analysis, and hygiene tests.
-2. **Review Criteria:**
-   - Code correctness, readability, and idiomatic Go practices.
-   - Test coverage for positive paths, error handling, edge cases, and failure modes.
-   - Absence of concurrency race conditions, deadlocks, and resource leaks.
-   - Preservation of existing security invariants.
-3. **Maintainer Approval:** All PRs require review and approval from repository maintainers before merging.
+1. **Automated CI:** Every PR triggers `.github/workflows/ci.yml` (running `go vet`, race detection, Linux/Windows cross-compilation, static analysis, and hygiene tests) alongside CodeQL checks.
+2. **Proportional Review by Risk:** Maintainers calibrate review rigor to the real impact of a change rather than blocking simple fixes behind heavy processes:
+
+   | Risk Level | Typical Examples | Review Expectations |
+   |---|---|---|
+   | **Low** | Typos, documentation clarity, README updates, template cleanup | Automated CI + maintainer review |
+   | **Medium** | Explorer integration, GUI UX, tooling scripts, non-consensus CLI/API updates | Automated CI + reproducible tests + technical review |
+   | **High** | Consensus (`core/`), PoW (`armaxhash/`), difficulty adjustment, transaction validation, cryptography/ML-DSA-65, wallet security, P2P TLS/TOFU, security-critical CI/CD | Automated CI + rigorous/adversarial tests + independent technical/security review for Mainnet readiness ([`docs/MAINNET_READINESS.md`](docs/MAINNET_READINESS.md)) |
+
+   *(Risk classification is primarily a maintainer responsibility; contributors may share a note if helpful without filling out extra governance forms. Self-review is never represented as independent security review.)*
+3. **Review Criteria (Code PRs):** Correctness, deterministic behavior, negative-path/edge-case test coverage, absence of data races/resource leaks, and preservation of security boundaries.
+4. **Maintainer Merge:** Maintainers merge PRs once CI and proportional review checks pass.
 
 ---
 
@@ -170,7 +191,7 @@ Please add a `Signed-off-by:` trailer to each commit message (e.g. `git commit -
 
 ## 8. Contributor Recognition
 
-Contributions to Armaxcoin are entirely voluntary. Contributors are credited in [docs/community/CONTRIBUTORS.md](docs/community/CONTRIBUTORS.md) and official release notes.
+Contributions to Armaxcoin are entirely voluntary. Contributors are credited in [docs/community/CONTRIBUTORS.md](docs/community/CONTRIBUTORS.md), GitHub contributor history, official release notes, and public community announcements where appropriate.
 
 > [!IMPORTANT]
 > **No Financial or Token Compensation:**

@@ -18,7 +18,7 @@ The Armaxcoin Public Testnet (`ARMX-TESTNET-1`) operates under isolated network 
 |---|---|---|---|
 | **P2P Gossip & Block Streaming** | **19335** | `0.0.0.0:19335` (All interfaces) | **ALLOW INBOUND** (Public TCP) |
 | **JSON-RPC Management API** | **19333** | `127.0.0.1:19333` (Loopback only) | **DENY INBOUND** (Localhost Only) |
-| **Web Explorer & Inspector** | **19341** | *(Planned / Removed)* | Inactive / Unreleased |
+| **Web Explorer & Faucet (`armax_explorer`)** | **19341** | `127.0.0.1:19341` *(Loopback behind Nginx HTTPS)* | **Public HTTPS Proxy** (`armax-coin.cloud/explorer`, `/faucet`) |
 
 | Parameter | Testnet Value | Note |
 |---|---|---|
@@ -29,7 +29,7 @@ The Armaxcoin Public Testnet (`ARMX-TESTNET-1`) operates under isolated network 
 | **Signature Scheme** | NIST FIPS 204 ML-DSA-65 | Post-quantum lattice-based digital signatures |
 | **Data Directory** | Linux: `~/.armax/testnet`<br>Windows: `%APPDATA%\Armax\testnet` | Default database and keystore location |
 
-> [!CRITICAL]
+> [!CAUTION]
 > **RPC Security Isolation (Loopback Only):**
 > The JSON-RPC daemon (`armcoind` port 19333 on testnet, 19332 on mainnet) exposes internal node mutation and status endpoints (`/mine`, `/block/submit`, `/peers`). It **MUST NEVER** be bound to `0.0.0.0` or exposed to public inbound internet traffic.
 > Local administrative CLI tools authenticate via the ephemeral, restrictive `armax.cookie` file on localhost. If remote administrative access is required, node operators must use an SSH tunnel (`ssh -L 19333:127.0.0.1:19333 user@server`) or an authenticated reverse proxy with TLS.
@@ -391,34 +391,15 @@ Because `v1.0.12` and `v1.0.11` share identical consensus and BoltDB state schem
 
 ---
 
-## 10. Manual Testnet Faucet Operator Guide
+## 10. Testnet Faucet Access & Security Boundaries
 
-To prevent sybil attacks, resource draining, and spam without introducing complex captcha services, Armaxcoin testnet operates on a **Manual Operator Faucet Model**.
+To help newcomers test wallets, transfers, and ML-DSA-65 transaction verification without mining first, the public testnet provides a rate-limited web faucet alongside the companion `armax_explorer` portal (`https://armax-coin.cloud/faucet`):
+
+- **Claim Rules:** Dispenses `10.0 tARMX` per claim with Cloudflare Turnstile CAPTCHA verification, a `6`-hour IP cooldown, a `24`-hour address cooldown, a global limit of `10` claims/hour, and a newcomer balance cap (addresses holding `>= 50 tARMX` are declined).
+- **Testing Only (`0 ARMX` Migration Exclusion):** Faucet distributions are strictly for functional testing and carry **`0 ARMX`** entitlement under the preliminary [`TREASURY_MIGRATION_PLAN.md`](governance/TREASURY_MIGRATION_PLAN.md).
 
 > [!CAUTION]
-> **DO NOT** deploy automated, unauthenticated public web faucets exposing hot private keys on the public internet. Testnet faucets must be managed manually by designated community operators.
-
-### Operator Workflow:
-1. **Faucet Wallet Initialization:**
-   The operator generates an isolated faucet keystore on a secured machine:
-   ```bash
-   ./armwallet -network testnet -create -wallet faucet_keystore.json
-   ```
-2. **Funding the Faucet:**
-   The operator mines blocks or receives testnet coins from genesis distribution.
-3. **Fulfilling Community Requests:**
-   Community members request testnet coins via the official forum or Discord by submitting their Bech32 address (`armx1...`).
-4. **Disbursing Coins:**
-   The operator executes manual single transactions:
-   ```bash
-   export ARMX_WALLET_PASSPHRASE="operator_secret_passphrase"
-   ./armsend -network testnet \
-     -wallet faucet_keystore.json \
-     -to armx1<requester_address> \
-     -amount-armoids 100000000 \
-     -fee-armoids 11000
-   ```
-   *(Sends 1.0 tARMX [100,000,000 Armoids] with a fee of 11,000 Armoids).*
+> **DO NOT** expose unauthenticated faucet endpoints or bind `armcoind` JSON-RPC (`19333`) to public network interfaces. Any self-hosted faucet must use an isolated dedicated keystore funded strictly for test dispensing, enforce rate limiting + anti-abuse checks, and invoke `armsend` / RPC solely over loopback `127.0.0.1:19333`.
 
 ---
 
