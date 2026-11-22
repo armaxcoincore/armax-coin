@@ -2,6 +2,7 @@ package node
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -17,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,22 +30,33 @@ import (
 
 const (
 	MaxPeersDefault            = 50
+	MaxInboundPeersDefault     = 38                // Default reserved inbound connection cap within MaxPeersDefault
+	MaxOutboundPeersDefault    = 12                // Default reserved outbound connection cap within MaxPeersDefault
+	MaxInboundFingerprints     = 2048              // RAM-only FIFO cache cap for inbound TLS client cert fingerprints
 	MaxAddressBookSize         = 1000              // Maximum addresses stored in address book [N-16]
 	MaxPeersPerResponse        = 250               // Maximum peers returned in PEERS_LIST [N-16]
 	MaxPeerFailures            = 3                 // Number of consecutive failures before evicting dead peer [N-16]
 	MaxSyncConcurrency         = 8                 // Max parallel workers for SyncBestPeer [N-16]
 	MaxPeersPerSubnet          = 3                 // Maximum concurrent peers/connections allowed per /24 subnet (Sybil/Eclipse defense)
-	MaxIncomingPacketSize      = 4 * 1024 * 1024   // 4 Megabytes max per P2P packet [P2-4]
+	MaxIncomingPacketSize      = 8 * 1024 * 1024   // 8 MiB max per P2P JSON line frame (accommodates 2 MB TxBinaryV1 JSON blocks) [P2-4]
+	LargePayloadThresholdBytes = 1 * 1024 * 1024   // Frames > 1 MiB acquire a lease from the aggregate budget
+	MaxAggregateLargePayloadBytes = 32 * 1024 * 1024 // 32 MiB process-wide transient large-payload ceiling (caps concurrent frame memory across peers)
+	LargePayloadAcquireTimeout = 2 * time.Second   // Bounded backpressure wait (~2s) before dropping saturated large frames
+	maxConcurrentPushDecompress = 2                // Concurrent PUSH_BLOCKS deflate inflation cap (bounds inflate memory amplification)
 	MaxBlockRangeResponseBytes = core.MaxBlockSize // >= MaxBlockSize (2,000,000 B), ensures always returning at least 1 block [P2-4]
+	MaxSyncBatchBytes          = 8 * 1024 * 1024   // 8 MiB canonical blk.Size() cap per ResolveFork commit batch (~16-20 MiB peak heap)
 	SocketTimeoutDuration      = 20 * time.Second
 	PeersFile                  = "peers.json"
 	SyncChunkSize              = 250              // Maximum blocks per GET_BLOCK_RANGE request
 	MaxOrphanBlocks            = 100              // Maximum orphan blocks in buffer [N-17]
 	MaxOrphanBlocksPerPeer     = 10               // Maximum orphan blocks allowed per peer [N-17]
 	MaxOrphanTxs               = 500              // Maximum pending out-of-order transactions [N-17]
+	MaxOrphanTxsPerPeer        = 25               // Maximum queued/in-flight orphan transactions per peer IP (prevents single-peer orphan flooding)
 	OrphanTxExpiry             = 10 * time.Minute // Out-of-order tx expiration window [N-17]
 	DefaultBanDuration         = 12 * time.Hour   // Misbehavior ban duration (reduced from 24h to 12h) [v1.0.10]
 	MaxPeerInactivityDuration  = 2 * time.Hour    // Unresponsive non-seed peer eviction threshold [v1.0.10]
+	maxRebroadcastTxsPerCycle  = 100              // Cap mempool txs rebroadcast per sync cycle
+	maxConcurrentRebroadcasts  = 16               // Bounded worker pool for RebroadcastMempool
 )
 
 // extractSubnet derives the /24 IPv4 or /48 IPv6 subnet prefix for Sybil/Eclipse attack mitigation
@@ -228,6 +241,7 @@ func getPeersPath() string {
 // PeerInfo holds address book metadata for a peer node [N-16]
 type PeerInfo struct {
 	Address         string    `json:"address"`
+	SeedHost        string    `json:"seed_host,omitempty"` // Originating configured DNS seed host:port when unambiguously resolved
 	LastSeen        time.Time `json:"last_seen"`
 	Failures        int       `json:"failures"`
 	Height          int       `json:"height"`
@@ -302,12 +316,17 @@ type PeerServer struct {
 	peerStorePath        string                 // [P1-A] Resolved immutable peer store path
 	peerStoreInitErr     error                  // [P1-A] Peer store directory creation / path error
 	Peers                []string
+	dialablePeers        []string             // Canonical normalized ip:port dial targets synchronized with Peers
 	newPeers             map[string]*PeerInfo // [N-16] Untried peer candidates
 	triedPeers           map[string]*PeerInfo // [N-16] Handshake verified peers
 	Lock                 sync.RWMutex
 	Blockchain           *core.Blockchain
 	MaxPeers             int
+	MaxInboundPeers      int
+	MaxOutboundPeers     int
 	ActiveConns          int32
+	activeInbound        int32
+	activeOutbound       int32
 	connLock             sync.Mutex
 	subnetConns          map[string]int
 	DHT                  *RoutingTable // Kademlia DHT routing table for decentralized peer discovery
@@ -330,11 +349,13 @@ type PeerServer struct {
 	inboundSessionsMu    sync.RWMutex
 	activeInboundConns   map[net.Conn]string // active inbound connections -> remote address [v1.0.6 dashboard fix]
 	inboundIdentityMu    sync.Mutex
-	inboundFingerprints  map[string]struct{}  // Durable network-scoped TOFU pins for inbound TLS client identities
+	inboundFingerprints     map[string]struct{} // RAM-only bounded cache for inbound TLS client identities
+	inboundFingerprintOrder []string            // FIFO eviction order for inboundFingerprints
 	expectedChains       map[string]time.Time // [N-04] tracks requested chains to reject unsolicited CHAIN_RESPONSE
 	orphanLock           sync.Mutex
 	orphanBlocks         map[string]*orphanBlockEntry // [N-06, N-17] orphan block buffer keyed by Block.Hash
 	orphanTxs            map[string]*orphanTxEntry    // [N-17] out-of-order pending transactions pool
+	orphanTxInFlight     map[string]int               // Per-peer IP pre-verify orphan tx reservations (bounds concurrent signature verification bursts)
 	lastOrphanScan       time.Time                    // [T5] Timestamp of last top-level orphan tx scan
 	DisableSubnetLimit   bool                         // [N-12] Allow multiple connections from same subnet (LAN/testnet)
 	AllowPrivatePeers    bool                         // [N-05, N-16] Allow loopback and private IP addresses (LAN/testnet)
@@ -356,10 +377,15 @@ type PeerServer struct {
 	whitelistIPs         map[string]struct{}          // [P2P Whitelist] Operator-whitelisted IP addresses (exempt from bans/rate-limits)
 	whitelistModTime     time.Time                    // [P2P Whitelist] last modified time of whitelist.json
 	pushMu               sync.Mutex                   // serializes PUSH_BLOCKS application
+	pushSessionsMu       sync.Mutex
+	pushSessions         map[string]*pushBufferSession
 	pushCooldownMu       sync.Mutex
-	pushCooldowns        map[string]time.Time        // peer address -> last chain push
-	seedPinMu            sync.RWMutex                // guards seedPins
-	seedPins             map[string]string           // normalized ip:port -> operator-pinned cert fingerprint (hex)
+	pushCooldowns        map[string]time.Time           // peer address -> last chain push
+	seedPinMu            sync.RWMutex                   // guards seedPins, seedHostPins, seedHostResolvedIPs, seedIPPins
+	seedPins             map[string]string              // normalized endpoint -> pinned SPKI fp (backwards-compatible lookup)
+	seedHostPins         map[string]string              // normalized configured seed host:port -> pinned SPKI fp
+	seedHostResolvedIPs  map[string][]string            // normalized seed host:port -> last resolved ip:port endpoints
+	seedIPPins           map[string]map[string]struct{} // normalized resolved ip:port -> set of distinct pinned SPKI fps
 	rateTrackers         map[string]*peerRateTracker // [N-15] Token bucket and endpoint trackers
 	BlockRangeBurst      float64                     // Configurable burst for GET_BLOCK_RANGE (token-bucket limiter; default 120.0)
 	BlockRangeRefillRate float64                     // Configurable refill rate/sec for GET_BLOCK_RANGE (default 20.0)
@@ -395,6 +421,12 @@ type PeerServer struct {
 	serverDone    chan struct{} // Closed when StartServer accept loop and teardown fully exit
 	currentCycle  uint64
 	activeCycle   *serverCycle
+
+	largePayloadMu     sync.Mutex
+	largePayloadUsed   int64
+	largePayloadNotify chan struct{}
+	pushDecompressMu   sync.Mutex
+	pushDecompressSem  chan struct{}
 }
 
 // SyncStatus describes whether the P2P node is caught up enough to safely mine public blocks.
@@ -436,6 +468,26 @@ type peerRateTracker struct {
 	lastBlockRangeRefill time.Time
 	forkpointTokens      float64
 	lastForkpointRefill  time.Time
+	mempoolTokens        float64
+	lastMempoolRefill    time.Time
+}
+
+func (tr *peerRateTracker) lastActive() time.Time {
+	if tr == nil {
+		return time.Time{}
+	}
+	latest := tr.lastRefill
+	for _, ts := range []time.Time{
+		tr.lastBlockRefill,
+		tr.lastBlockRangeRefill,
+		tr.lastForkpointRefill,
+		tr.lastMempoolRefill,
+	} {
+		if ts.After(latest) {
+			latest = ts
+		}
+	}
+	return latest
 }
 
 const (
@@ -446,11 +498,32 @@ const (
 	InboundHandshakeTimeout = 5 * time.Second
 	UnreachablePeerCooldown = 2 * time.Hour // Inbound NAT/firewall unreachable port cooldown [v1.0.10]
 	EvictedPeerCooldown     = 2 * time.Hour // Dead/evicted peer dial cooldown (do not retry for >= 2h) [v1.0.10]
-	SelfAnnounceInterval    = 10 * time.Minute
-	InboundProbeTimeout     = 3 * time.Second
+	SelfAnnounceInterval       = 10 * time.Minute
+	InboundProbeTimeout        = 3 * time.Second
+	maxConcurrentInboundProbes = 4
+	maxInboundPeersPerMessage  = 64
+	maxNewPeersPerMessage      = 16
+
+	// Periodic runtime map GC intervals, stale-entry TTLs, and hard size ceilings
+	runtimeMapGCInterval = 3 * time.Minute
+	maxRateTrackers      = 4096
+	maxBanScores         = 8192
+	maxSeenTxs           = 10000
+	maxSeenBlks          = 5000
+	maxRelayedTxs        = 10000
+	rateTrackerIdleTTL   = 15 * time.Minute
+	banScoreIdleTTL      = 1 * time.Hour
+	skewStrikeWindow     = 10 * time.Minute
+	seenTxTTL            = 10 * time.Minute
+	seenBlkTTL           = 30 * time.Minute
+	syncCooldownTTL      = 30 * time.Second
 )
 
-var errSessionClosed = errors.New("P2P outbound session was closed before write")
+var (
+	errSessionClosed               = errors.New("P2P outbound session was closed before write")
+	errLargePayloadBudgetExhausted = errors.New("aggregate large P2P payload budget exhausted")
+	errOutboundLimitExceeded       = errors.New("outbound connection limit exceeded")
+)
 
 func isP2PDebugEnabled() bool {
 	return os.Getenv("ARMX_P2P_DEBUG") == "1" || core.IsDebugEnabled(core.LogCategoryNet)
@@ -499,6 +572,7 @@ type outboundPeerSession struct {
 	closed             atomic.Bool
 	handshakeValidated atomic.Bool // Valid GET_HEIGHT exchange; not proof of identity when TOFU is disabled.
 	lastUsed           atomic.Int64
+	lastAppTraffic     atomic.Int64 // Timestamp of last non-heartbeat application RPC/message
 	closeOnce          sync.Once
 }
 
@@ -536,6 +610,19 @@ func (s *outboundPeerSession) touch() {
 	if s != nil {
 		s.lastUsed.Store(time.Now().UnixNano())
 	}
+}
+
+func (s *outboundPeerSession) touchApp() {
+	if s != nil {
+		s.lastAppTraffic.Store(time.Now().UnixNano())
+	}
+}
+
+func (s *outboundPeerSession) lastAppActivity() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.lastAppTraffic.Load()
 }
 
 func (s *outboundPeerSession) lastActivity() time.Time {
@@ -907,6 +994,35 @@ func (p *PeerServer) getCanonicalPeerID(addr string, certFingerprint string) str
 	return "endpoint:" + norm
 }
 
+// getDialableAddress returns the canonical normalized ip:port endpoint used for dialing and TOFU.
+// When a peer record is keyed by a resolved DNS seed hostname, it resolves via seedHostToIPs
+// to its normalized IP endpoint while keeping getDisplayAddress separate for UI/gossip.
+func (p *PeerServer) getDialableAddress(addr string) string {
+	if p == nil || addr == "" {
+		return addr
+	}
+	norm := normalizePeerEndpoint(addr)
+	host, _, err := net.SplitHostPort(norm)
+	if err == nil && net.ParseIP(host) != nil {
+		return norm
+	}
+
+	p.seedMu.RLock()
+	defer p.seedMu.RUnlock()
+	for _, key := range []string{norm, addr} {
+		if ips, ok := p.seedHostToIPs[key]; ok {
+			for _, ip := range ips {
+				normIP := normalizePeerEndpoint(ip)
+				h, _, splitErr := net.SplitHostPort(normIP)
+				if splitErr == nil && net.ParseIP(h) != nil {
+					return normIP
+				}
+			}
+		}
+	}
+	return norm
+}
+
 // isSeedEndpoint checks if an address corresponds to a known DNS seed or its resolved IP [v1.0.6]
 func (p *PeerServer) isSeedEndpoint(addr string) bool {
 	if p == nil || addr == "" {
@@ -948,6 +1064,7 @@ func (p *PeerServer) reseedPeers(verbose bool) {
 
 	hostToIPs := make(map[string][]string)
 	ipToHosts := make(map[string][]string)
+	ipToUniqueHosts := make(map[string]map[string]struct{})
 	seedAddrs := make(map[string]struct{})
 	seenSeeds := make(map[string]struct{})
 	for _, seed := range seeds {
@@ -959,6 +1076,8 @@ func (p *PeerServer) reseedPeers(verbose bool) {
 			continue
 		}
 		seenSeeds[seedKey] = struct{}{}
+		seedHost, _, splitErr := net.SplitHostPort(seedKey)
+		isHostnameSeed := splitErr == nil && net.ParseIP(seedHost) == nil
 		uniqueIPs := make(map[string]struct{})
 		for _, addr := range resolveSeed(seed, verbose) {
 			addr = strings.TrimSpace(addr)
@@ -978,6 +1097,12 @@ func (p *PeerServer) reseedPeers(verbose bool) {
 			if normalized != addr {
 				ipToHosts[normalized] = append(ipToHosts[normalized], seed)
 			}
+			if isHostnameSeed && normalized != "" {
+				if ipToUniqueHosts[normalized] == nil {
+					ipToUniqueHosts[normalized] = make(map[string]struct{})
+				}
+				ipToUniqueHosts[normalized][seedKey] = struct{}{}
+			}
 			seedAddrs[addr] = struct{}{}
 			seedAddrs[normalized] = struct{}{}
 		}
@@ -993,6 +1118,8 @@ func (p *PeerServer) reseedPeers(verbose bool) {
 	p.seedHostToIPs = hostToIPs
 	p.seedIPToHosts = ipToHosts
 	p.seedMu.Unlock()
+
+	p.syncSeedPinsFromHostMap(hostToIPs)
 
 	removedStalePeers := false
 	if len(oldAddrs) > 0 {
@@ -1022,6 +1149,38 @@ func (p *PeerServer) reseedPeers(verbose bool) {
 		if err := p.AddPeer(addr); err != nil {
 			fmt.Printf("[P2P] Failed to refresh DNS seed peer %s: %v\n", addr, err)
 		}
+	}
+
+	if len(ipToUniqueHosts) > 0 {
+		p.Lock.Lock()
+		for addr := range seedAddrs {
+			normAddr := normalizePeerEndpoint(addr)
+			hosts := ipToUniqueHosts[normAddr]
+			var assignedHost string
+			if len(hosts) == 1 {
+				for h := range hosts {
+					assignedHost = h
+				}
+			}
+			for _, table := range []map[string]*PeerInfo{p.triedPeers, p.newPeers} {
+				if table == nil {
+					continue
+				}
+				for _, key := range []string{addr, normAddr} {
+					if key == "" {
+						continue
+					}
+					if info := table[key]; info != nil {
+						if len(hosts) > 1 {
+							info.SeedHost = ""
+						} else if assignedHost != "" {
+							info.SeedHost = assignedHost
+						}
+					}
+				}
+			}
+		}
+		p.Lock.Unlock()
 	}
 }
 
@@ -1158,7 +1317,7 @@ func (p *PeerServer) verifyAndAddInboundPeer(candidateAddr string) {
 	if p.probingPeers == nil {
 		p.probingPeers = make(map[string]bool)
 	}
-	if p.probingPeers[candidateAddr] || len(p.probingPeers) >= MaxSyncConcurrency {
+	if p.probingPeers[candidateAddr] || len(p.probingPeers) >= maxConcurrentInboundProbes {
 		p.reachabilityMu.Unlock()
 		return
 	}
@@ -1181,6 +1340,10 @@ func (p *PeerServer) verifyAndAddInboundPeer(candidateAddr string) {
 			Type:      "GET_HEIGHT",
 		}, InboundProbeTimeout)
 		if err != nil || resp == nil || resp.Type != "HEIGHT_RESPONSE" {
+			// Local outbound slot saturation must not blacklist honest inbound peers for 2 hours.
+			if errors.Is(err, errOutboundLimitExceeded) {
+				return
+			}
 			// Peer port is closed / behind NAT / unreachable; cache negative result to prevent retry spam.
 			p.markPeerUnreachable(candidateAddr, UnreachablePeerCooldown)
 			if sess := p.getExistingOutboundSession(candidateAddr); sess != nil {
@@ -1269,6 +1432,45 @@ func (p *PeerServer) registerOutboundConnSession(
 	return session, nil
 }
 
+// registerStreamConn registers an outbound streaming connection with the active server cycle
+// so Stop() forcibly closes it and unblocks any in-flight write or pacing sleep.
+// If no server cycle is running (e.g., direct unit tests on a PeerServer struct), it returns
+// a nil quitChan, a no-op unregister func, and ok=true unless the server is stopping.
+func (p *PeerServer) registerStreamConn(conn net.Conn) (<-chan struct{}, func(), bool) {
+	p.lifecycleLock.RLock()
+	if p.state == ServerStateStopping {
+		p.lifecycleLock.RUnlock()
+		return nil, func() {}, false
+	}
+	cycle := p.activeCycle
+	if cycle == nil {
+		p.lifecycleLock.RUnlock()
+		return nil, func() {}, true
+	}
+	cycle.connsMu.Lock()
+	select {
+	case <-cycle.quitChan:
+		cycle.connsMu.Unlock()
+		p.lifecycleLock.RUnlock()
+		return nil, func() {}, false
+	default:
+		cycle.activeConns[conn] = struct{}{}
+	}
+	quitCh := cycle.quitChan
+	cycle.connsMu.Unlock()
+	p.lifecycleLock.RUnlock()
+
+	var once sync.Once
+	unregister := func() {
+		once.Do(func() {
+			cycle.connsMu.Lock()
+			delete(cycle.activeConns, conn)
+			cycle.connsMu.Unlock()
+		})
+	}
+	return quitCh, unregister, true
+}
+
 func (p *PeerServer) getOrCreateOutboundSessionWithStatus(
 	peerAddress string,
 	timeout time.Duration,
@@ -1332,14 +1534,6 @@ func (p *PeerServer) getOrCreateOutboundSessionWithStatus(
 	return session, false, nil
 }
 
-func (p *PeerServer) getOrCreateOutboundSession(
-	peerAddress string,
-	timeout time.Duration,
-) (*outboundPeerSession, error) {
-	session, _, err := p.getOrCreateOutboundSessionWithStatus(peerAddress, timeout)
-	return session, err
-}
-
 func (p *PeerServer) dropOutboundSession(
 	peerAddress string,
 	session *outboundPeerSession,
@@ -1361,6 +1555,78 @@ func (p *PeerServer) dropOutboundSession(
 		delete(session.cycle.activeConns, session.conn)
 		session.cycle.connsMu.Unlock()
 	}
+}
+
+// evictIdleOutboundSession closes and removes the least-recently-used idle outbound session
+// (preferring non-seed sessions without recent non-heartbeat traffic) to free an outbound slot.
+// Candidate snapshots are released from outboundMu before calling isSeedEndpoint and sess.close()
+// so lock ordering never nests outboundMu -> seedMu/cycle.connsMu/connLock.
+func (p *PeerServer) evictIdleOutboundSession(excludeAddr string) bool {
+	if p == nil {
+		return false
+	}
+	type evictCandidate struct {
+		addr     string
+		sess     *outboundPeerSession
+		lastApp  int64
+		lastUsed int64
+		isSeed   bool
+	}
+
+	p.outboundMu.Lock()
+	candidates := make([]evictCandidate, 0, len(p.outboundSessions))
+	for addr, sess := range p.outboundSessions {
+		if addr == excludeAddr || sess == nil || sess.isClosed() {
+			continue
+		}
+		candidates = append(candidates, evictCandidate{
+			addr:     addr,
+			sess:     sess,
+			lastApp:  sess.lastAppActivity(),
+			lastUsed: sess.lastUsed.Load(),
+		})
+	}
+	p.outboundMu.Unlock()
+
+	if len(candidates) == 0 {
+		return false
+	}
+
+	for i := range candidates {
+		candidates[i].isSeed = p.isSeedEndpoint(candidates[i].addr)
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].isSeed != candidates[j].isSeed {
+			return !candidates[i].isSeed
+		}
+		if candidates[i].lastApp != candidates[j].lastApp {
+			return candidates[i].lastApp < candidates[j].lastApp
+		}
+		if candidates[i].lastUsed != candidates[j].lastUsed {
+			return candidates[i].lastUsed < candidates[j].lastUsed
+		}
+		return candidates[i].addr < candidates[j].addr
+	})
+
+	for _, c := range candidates {
+		var evicted *outboundPeerSession
+		p.outboundMu.Lock()
+		if current := p.outboundSessions[c.addr]; current == c.sess && current != nil && !current.isClosed() {
+			if current.mu.TryLock() {
+				delete(p.outboundSessions, c.addr)
+				evicted = current
+				current.mu.Unlock()
+			}
+		}
+		p.outboundMu.Unlock()
+
+		if evicted != nil {
+			evicted.close()
+			return true
+		}
+	}
+	return false
 }
 
 func (p *PeerServer) closeOutboundSessions(cycle *serverCycle) {
@@ -1510,7 +1776,35 @@ func (p *PeerServer) isTxSeen(txHash string) bool {
 	return exists
 }
 
-// markTxSeen records a transaction hash after it has been successfully verified or queued [N-17]
+// evictOldestTimeMapEntries evicts oldest entries until len(m) <= targetMax (caller holds leaf lock).
+func evictOldestTimeMapEntries(m map[string]time.Time, targetMax int) {
+	if targetMax < 0 {
+		targetMax = 0
+	}
+	if len(m) <= targetMax {
+		return
+	}
+	type timedKey struct {
+		key string
+		ts  time.Time
+	}
+	entries := make([]timedKey, 0, len(m))
+	for k, ts := range m {
+		entries = append(entries, timedKey{key: k, ts: ts})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if !entries[i].ts.Equal(entries[j].ts) {
+			return entries[i].ts.Before(entries[j].ts)
+		}
+		return entries[i].key < entries[j].key
+	})
+	excess := len(m) - targetMax
+	for i := 0; i < excess && i < len(entries); i++ {
+		delete(m, entries[i].key)
+	}
+}
+
+// markTxSeen records a transaction hash after verification or queuing, enforcing stale TTL and maxSeenTxs eviction [N-17]
 func (p *PeerServer) markTxSeen(txHash string) {
 	p.seenLock.Lock()
 	defer p.seenLock.Unlock()
@@ -1518,11 +1812,14 @@ func (p *PeerServer) markTxSeen(txHash string) {
 		p.seenTxs = make(map[string]time.Time)
 	}
 	now := time.Now()
-	if len(p.seenTxs) > 10000 {
+	if _, exists := p.seenTxs[txHash]; !exists && len(p.seenTxs) >= maxSeenTxs {
 		for h, t := range p.seenTxs {
-			if now.Sub(t) > 10*time.Minute {
+			if now.Sub(t) > seenTxTTL {
 				delete(p.seenTxs, h)
 			}
+		}
+		if len(p.seenTxs) >= maxSeenTxs {
+			evictOldestTimeMapEntries(p.seenTxs, maxSeenTxs-1)
 		}
 	}
 	p.seenTxs[txHash] = now
@@ -1530,7 +1827,50 @@ func (p *PeerServer) markTxSeen(txHash string) {
 
 const txRelayRetryTTL = 10 * time.Minute
 
-// claimTxRelay atomically claims a relay attempt for one transaction and peer.
+// pruneRelayedTxsLocked purges expired relay claims and enforces targetMax under p.relayLock.
+func (p *PeerServer) pruneRelayedTxsLocked(now time.Time, targetMax int) {
+	if len(p.relayedTxs) == 0 {
+		return
+	}
+	for hash, claims := range p.relayedTxs {
+		for addr, claimedAt := range claims {
+			if now.Sub(claimedAt) >= txRelayRetryTTL {
+				delete(claims, addr)
+			}
+		}
+		if len(claims) == 0 {
+			delete(p.relayedTxs, hash)
+		}
+	}
+	if targetMax >= 0 && len(p.relayedTxs) > targetMax {
+		type relayBucket struct {
+			hash   string
+			newest time.Time
+		}
+		buckets := make([]relayBucket, 0, len(p.relayedTxs))
+		for hash, claims := range p.relayedTxs {
+			var newest time.Time
+			for _, claimedAt := range claims {
+				if claimedAt.After(newest) {
+					newest = claimedAt
+				}
+			}
+			buckets = append(buckets, relayBucket{hash: hash, newest: newest})
+		}
+		sort.Slice(buckets, func(i, j int) bool {
+			if !buckets[i].newest.Equal(buckets[j].newest) {
+				return buckets[i].newest.Before(buckets[j].newest)
+			}
+			return buckets[i].hash < buckets[j].hash
+		})
+		excess := len(p.relayedTxs) - targetMax
+		for i := 0; i < excess && i < len(buckets); i++ {
+			delete(p.relayedTxs, buckets[i].hash)
+		}
+	}
+}
+
+// claimTxRelay atomically claims a relay attempt for one transaction and peer using lazy per-entry expiry.
 func (p *PeerServer) claimTxRelay(
 	txHash string,
 	peer string,
@@ -1543,28 +1883,23 @@ func (p *PeerServer) claimTxRelay(
 	}
 
 	now := time.Now()
-
-	// Remove expired claims and empty transaction entries.
-	for hash, claims := range p.relayedTxs {
-		for addr, claimedAt := range claims {
-			if now.Sub(claimedAt) >= txRelayRetryTTL {
-				delete(claims, addr)
-			}
-		}
-
-		if len(claims) == 0 {
-			delete(p.relayedTxs, hash)
-		}
-	}
-
 	claims := p.relayedTxs[txHash]
-	if claims == nil {
-		claims = make(map[string]time.Time)
-		p.relayedTxs[txHash] = claims
-	}
-
-	if _, exists := claims[peer]; exists {
-		return time.Time{}, false
+	if claims != nil {
+		if claimedAt, exists := claims[peer]; exists {
+			if now.Sub(claimedAt) < txRelayRetryTTL {
+				return time.Time{}, false
+			}
+			delete(claims, peer)
+		}
+	} else {
+		if len(p.relayedTxs) >= maxRelayedTxs {
+			p.pruneRelayedTxsLocked(now, maxRelayedTxs-1)
+		}
+		claims = p.relayedTxs[txHash]
+		if claims == nil {
+			claims = make(map[string]time.Time)
+			p.relayedTxs[txHash] = claims
+		}
 	}
 
 	claims[peer] = now
@@ -1608,7 +1943,7 @@ func (p *PeerServer) isBlockSeen(blkHash string) bool {
 	return exists
 }
 
-// markBlockSeen records a block hash after it has been verified or queued in orphan buffer [N-17]
+// markBlockSeen records a block hash after verification or orphan buffering, enforcing stale TTL and maxSeenBlks eviction [N-17]
 func (p *PeerServer) markBlockSeen(blkHash string) {
 	p.seenLock.Lock()
 	defer p.seenLock.Unlock()
@@ -1616,11 +1951,14 @@ func (p *PeerServer) markBlockSeen(blkHash string) {
 		p.seenBlks = make(map[string]time.Time)
 	}
 	now := time.Now()
-	if len(p.seenBlks) > 5000 {
+	if _, exists := p.seenBlks[blkHash]; !exists && len(p.seenBlks) >= maxSeenBlks {
 		for h, t := range p.seenBlks {
-			if now.Sub(t) > 30*time.Minute {
+			if now.Sub(t) > seenBlkTTL {
 				delete(p.seenBlks, h)
 			}
+		}
+		if len(p.seenBlks) >= maxSeenBlks {
+			evictOldestTimeMapEntries(p.seenBlks, maxSeenBlks-1)
 		}
 	}
 	p.seenBlks[blkHash] = now
@@ -1893,7 +2231,7 @@ func (p *PeerServer) ProcessIncomingBlock(block core.Block, remoteIP string, rem
 			// Only trigger sync if peer cooldown has elapsed [T3]
 			if p.canTriggerSync(host) {
 				var matchingPeers []string
-				for _, peer := range p.GetPeers() {
+				for _, peer := range p.GetDialablePeers() {
 					if strings.HasPrefix(peer, host+":") {
 						matchingPeers = append(matchingPeers, peer)
 					}
@@ -1929,7 +2267,7 @@ func (p *PeerServer) ProcessIncomingBlock(block core.Block, remoteIP string, rem
 
 				if p.canTriggerSync(host) {
 					var matchingPeers []string
-					for _, peer := range p.GetPeers() {
+					for _, peer := range p.GetDialablePeers() {
 						if strings.HasPrefix(peer, host+":") {
 							matchingPeers = append(matchingPeers, peer)
 						}
@@ -1971,18 +2309,92 @@ func (p *PeerServer) ProcessIncomingTx(tx core.Transaction, peerIP string) bool 
 		return true
 	}
 
-	// Hold out-of-order nonces in orphan pool [N-17]
+	// Hold out-of-order nonces in orphan pool bounded by global MaxOrphanTxs and per-peer MaxOrphanTxsPerPeer [N-17]
 	if strings.Contains(strings.ToLower(msg), "nonce") {
-		if tx.Verify() {
+		p.orphanLock.Lock()
+		if p.orphanTxInFlight == nil {
+			p.orphanTxInFlight = make(map[string]int)
+		}
+		peerCount := 0
+		for _, entry := range p.orphanTxs {
+			if entry.PeerIP == peerIP {
+				peerCount++
+			}
+		}
+		if peerCount+p.orphanTxInFlight[peerIP] >= MaxOrphanTxsPerPeer {
+			p.orphanLock.Unlock()
+			core.LogWarn(core.LogCategoryMempool, "Rejected orphan transaction %s from peer %s: per-peer orphan limit (%d) reached", txHash, peerIP, MaxOrphanTxsPerPeer)
+			return false
+		}
+		p.orphanTxInFlight[peerIP]++
+		reserved := true
+		p.orphanLock.Unlock()
+
+		releaseInFlight := func() {
+			if !reserved {
+				return
+			}
+			reserved = false
 			p.orphanLock.Lock()
+			if p.orphanTxInFlight != nil {
+				p.orphanTxInFlight[peerIP]--
+				if p.orphanTxInFlight[peerIP] <= 0 {
+					delete(p.orphanTxInFlight, peerIP)
+				}
+			}
+			p.orphanLock.Unlock()
+		}
+		defer releaseInFlight()
+
+		if tx.Verify() {
+			now := time.Now()
+			p.orphanLock.Lock()
+			if reserved {
+				reserved = false
+				if p.orphanTxInFlight != nil {
+					p.orphanTxInFlight[peerIP]--
+					if p.orphanTxInFlight[peerIP] <= 0 {
+						delete(p.orphanTxInFlight, peerIP)
+					}
+				}
+			}
 			if p.orphanTxs == nil {
 				p.orphanTxs = make(map[string]*orphanTxEntry)
 			}
+			if _, already := p.orphanTxs[txHash]; already {
+				p.orphanLock.Unlock()
+				p.markTxSeen(txHash)
+				return true
+			}
+
+			peerCount = 0
+			peerCounts := make(map[string]int)
+			for _, entry := range p.orphanTxs {
+				peerCounts[entry.PeerIP]++
+				if entry.PeerIP == peerIP {
+					peerCount++
+				}
+			}
+			if peerCount >= MaxOrphanTxsPerPeer {
+				p.orphanLock.Unlock()
+				return false
+			}
+
 			if len(p.orphanTxs) >= MaxOrphanTxs {
+				// Fair global eviction: evict the oldest entry belonging to the top consumer IP(s).
+				topCount := 0
+				for _, cnt := range peerCounts {
+					if cnt > topCount {
+						topCount = cnt
+					}
+				}
 				var oldestHash string
 				var oldestTime time.Time
 				first := true
 				for h, entry := range p.orphanTxs {
+					if peerCounts[entry.PeerIP] != topCount {
+						continue
+					}
 					if first || entry.AddedAt.Before(oldestTime) {
 						oldestHash = h
 						oldestTime = entry.AddedAt
@@ -1996,7 +2408,7 @@ func (p *PeerServer) ProcessIncomingTx(tx core.Transaction, peerIP string) bool 
 			p.orphanTxs[txHash] = &orphanTxEntry{
 				Tx:      tx,
 				PeerIP:  peerIP,
-				AddedAt: time.Now(),
+				AddedAt: now,
 			}
 			p.orphanLock.Unlock()
 			p.markTxSeen(txHash)
@@ -2181,6 +2593,7 @@ func NewPeerServer(port string, bc *core.Blockchain, opts ...string) *PeerServer
 		seedIPToHosts:       make(map[string][]string),
 		activeInboundConns:  make(map[net.Conn]string),
 		inboundFingerprints: make(map[string]struct{}),
+		pushSessions:        make(map[string]*pushBufferSession),
 	}
 	ps.netIDVal.Store(&canonicalNetID)
 	ps.loadPeers()
@@ -2313,6 +2726,103 @@ func (p *PeerServer) isRateLimitDisabled() bool {
 	return true
 }
 
+func (p *PeerServer) isIPActivelyBannedLocked(ip string, now time.Time) bool {
+	if p.bannedIPs == nil {
+		return false
+	}
+	exp, ok := p.bannedIPs[ip]
+	return ok && now.Before(exp)
+}
+
+// pruneRateTrackersLocked sweeps idle non-banned rateTrackers and enforces targetMax under p.banLock.
+func (p *PeerServer) pruneRateTrackersLocked(now time.Time, targetMax int) {
+	if len(p.rateTrackers) == 0 {
+		return
+	}
+	for ip, tr := range p.rateTrackers {
+		if p.isIPActivelyBannedLocked(ip, now) {
+			continue
+		}
+		if tr == nil || now.Sub(tr.lastActive()) >= rateTrackerIdleTTL {
+			delete(p.rateTrackers, ip)
+		}
+	}
+	if targetMax < 0 || len(p.rateTrackers) <= targetMax {
+		return
+	}
+	type trackerAge struct {
+		ip     string
+		active time.Time
+	}
+	nonBanned := make([]trackerAge, 0, len(p.rateTrackers))
+	banned := make([]trackerAge, 0)
+	for ip, tr := range p.rateTrackers {
+		item := trackerAge{ip: ip, active: tr.lastActive()}
+		if p.isIPActivelyBannedLocked(ip, now) {
+			banned = append(banned, item)
+		} else {
+			nonBanned = append(nonBanned, item)
+		}
+	}
+	sortByAge := func(list []trackerAge) {
+		sort.Slice(list, func(i, j int) bool {
+			if !list[i].active.Equal(list[j].active) {
+				return list[i].active.Before(list[j].active)
+			}
+			return list[i].ip < list[j].ip
+		})
+	}
+	sortByAge(nonBanned)
+	for i := 0; i < len(nonBanned) && len(p.rateTrackers) > targetMax; i++ {
+		delete(p.rateTrackers, nonBanned[i].ip)
+	}
+	if len(p.rateTrackers) > targetMax && len(banned) > 0 {
+		sortByAge(banned)
+		for i := 0; i < len(banned) && len(p.rateTrackers) > targetMax; i++ {
+			delete(p.rateTrackers, banned[i].ip)
+		}
+	}
+}
+
+// pruneBanScoresLocked removes idle non-banned banScores and enforces maxBanScores under p.banLock.
+func (p *PeerServer) pruneBanScoresLocked(now time.Time) {
+	if len(p.banScores) == 0 {
+		return
+	}
+	for ip := range p.banScores {
+		if p.isIPActivelyBannedLocked(ip, now) {
+			continue
+		}
+		tr := p.rateTrackers[ip]
+		if tr == nil || now.Sub(tr.lastActive()) >= banScoreIdleTTL {
+			delete(p.banScores, ip)
+		}
+	}
+	if len(p.banScores) <= maxBanScores {
+		return
+	}
+	type scoreEntry struct {
+		ip    string
+		score int
+	}
+	candidates := make([]scoreEntry, 0, len(p.banScores))
+	for ip, score := range p.banScores {
+		if p.isIPActivelyBannedLocked(ip, now) {
+			continue
+		}
+		candidates = append(candidates, scoreEntry{ip: ip, score: score})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].score != candidates[j].score {
+			return candidates[i].score < candidates[j].score
+		}
+		return candidates[i].ip < candidates[j].ip
+	})
+	for i := 0; i < len(candidates) && len(p.banScores) > maxBanScores; i++ {
+		delete(p.banScores, candidates[i].ip)
+	}
+}
+
 // AddBanScore increments the misbehavior score of an IP and bans it for 24h if threshold >= 100 [N-15]
 func (p *PeerServer) AddBanScore(ip string, score int) {
 	if p.isRateLimitDisabled() || p.isWhitelisted(ip) {
@@ -2326,10 +2836,14 @@ func (p *PeerServer) AddBanScore(ip string, score int) {
 	if p.bannedIPs == nil {
 		p.bannedIPs = make(map[string]time.Time)
 	}
+	now := time.Now()
 	p.banScores[ip] += score
 	if p.banScores[ip] >= 100 {
-		p.banIPLocked(ip, time.Now().Add(DefaultBanDuration))
+		p.banIPLocked(ip, now.Add(DefaultBanDuration))
 		fmt.Printf("[P2P] [!] Banned peer IP %s for 12h (ban score: %d)\n", ip, p.banScores[ip])
+	}
+	if len(p.banScores) > maxBanScores {
+		p.pruneBanScoresLocked(now)
 	}
 }
 
@@ -2346,7 +2860,7 @@ func (p *PeerServer) recordClockSkewViolation(ip string) {
 		p.skewStrikes = make(map[string][]time.Time)
 	}
 	now := time.Now()
-	cutoff := now.Add(-10 * time.Minute)
+	cutoff := now.Add(-skewStrikeWindow)
 	var active []time.Time
 	for _, t := range p.skewStrikes[ip] {
 		if t.After(cutoff) {
@@ -2366,6 +2880,9 @@ func (p *PeerServer) recordClockSkewViolation(ip string) {
 			}
 			p.banIPLocked(ip, now.Add(DefaultBanDuration))
 			fmt.Printf("[P2P] [!] Banned peer IP %s for 12h (ban score: %d)\n", ip, p.banScores[ip])
+		}
+		if len(p.banScores) > maxBanScores {
+			p.pruneBanScoresLocked(now)
 		}
 	}
 }
@@ -2398,8 +2915,9 @@ func (p *PeerServer) AllowMessage(ip string, msgType string) bool {
 	p.banLock.Lock()
 	defer p.banLock.Unlock()
 
+	now := time.Now()
 	if p.bannedIPs != nil {
-		if exp, exists := p.bannedIPs[ip]; exists && time.Now().Before(exp) {
+		if exp, exists := p.bannedIPs[ip]; exists && now.Before(exp) {
 			return false
 		}
 	}
@@ -2408,8 +2926,10 @@ func (p *PeerServer) AllowMessage(ip string, msgType string) bool {
 		p.rateTrackers = make(map[string]*peerRateTracker)
 	}
 	tracker, exists := p.rateTrackers[ip]
-	now := time.Now()
 	if !exists {
+		if len(p.rateTrackers) >= maxRateTrackers {
+			p.pruneRateTrackersLocked(now, maxRateTrackers-1)
+		}
 		burst := p.BlockRangeBurst
 		if burst <= 0 {
 			burst = 120.0
@@ -2423,6 +2943,8 @@ func (p *PeerServer) AllowMessage(ip string, msgType string) bool {
 			lastBlockRangeRefill: now,
 			forkpointTokens:      30,
 			lastForkpointRefill:  now,
+			mempoolTokens:        6.0,
+			lastMempoolRefill:    now,
 		}
 		p.rateTrackers[ip] = tracker
 	}
@@ -2448,6 +2970,9 @@ func (p *PeerServer) AllowMessage(ip string, msgType string) bool {
 					p.bannedIPs = make(map[string]time.Time)
 				}
 				p.banIPLocked(ip, now.Add(DefaultBanDuration))
+			}
+			if len(p.banScores) > maxBanScores {
+				p.pruneBanScoresLocked(now)
 			}
 			return false
 		}
@@ -2494,6 +3019,24 @@ func (p *PeerServer) AllowMessage(ip string, msgType string) bool {
 		}
 		tracker.forkpointTokens -= 1.0
 		return true
+	} else if msgType == "GET_MEMPOOL" {
+		// Shared-NAT-friendly per-IP aggregate bucket: burst 6, refill 1/8s (7.5 req/min)
+		// comfortably allows 3 honest nodes behind 1 NAT IP polling every 30s without ban score penalty.
+		if tracker.lastMempoolRefill.IsZero() {
+			tracker.mempoolTokens = 6.0
+			tracker.lastMempoolRefill = now
+		} else if elapsed := now.Sub(tracker.lastMempoolRefill).Seconds(); elapsed > 0 {
+			tracker.mempoolTokens += elapsed * (1.0 / 8.0)
+			if tracker.mempoolTokens > 6.0 {
+				tracker.mempoolTokens = 6.0
+			}
+			tracker.lastMempoolRefill = now
+		}
+		if tracker.mempoolTokens < 1.0 {
+			return false
+		}
+		tracker.mempoolTokens -= 1.0
+		return true
 	}
 
 	// Refill token bucket: 20 tokens per second up to 30 burst for general messages
@@ -2516,6 +3059,9 @@ func (p *PeerServer) AllowMessage(ip string, msgType string) bool {
 			}
 			p.banIPLocked(ip, now.Add(DefaultBanDuration))
 		}
+		if len(p.banScores) > maxBanScores {
+			p.pruneBanScoresLocked(now)
+		}
 		return false
 	}
 	tracker.tokens -= 1.0
@@ -2523,12 +3069,14 @@ func (p *PeerServer) AllowMessage(ip string, msgType string) bool {
 	return true
 }
 
-// rebuildPeersListLocked synchronizes p.Peers slice with tried and new peer tables,
-// strictly deduplicating peer identities so DNS seed hostnames and resolved IPs are not counted twice [v1.0.6].
+// rebuildPeersListLocked synchronizes p.Peers (display addresses) and p.dialablePeers (canonical ip:port)
+// with tried and new peer tables, strictly deduplicating peer identities and separating dial endpoints from display labels [v1.0.6].
 func (p *PeerServer) rebuildPeersListLocked() {
 	var list []string
+	var dialable []string
 	seen := make(map[string]struct{})
 	seenDisplay := make(map[string]struct{})
+	seenDialable := make(map[string]struct{})
 
 	for addr, info := range p.triedPeers {
 		fp := ""
@@ -2544,6 +3092,14 @@ func (p *PeerServer) rebuildPeersListLocked() {
 			}
 			seenDisplay[displayAddr] = struct{}{}
 			list = append(list, displayAddr)
+
+			dialAddr := p.getDialableAddress(addr)
+			if dialAddr != "" {
+				if _, taken := seenDialable[dialAddr]; !taken {
+					seenDialable[dialAddr] = struct{}{}
+					dialable = append(dialable, dialAddr)
+				}
+			}
 		}
 	}
 
@@ -2561,10 +3117,19 @@ func (p *PeerServer) rebuildPeersListLocked() {
 			}
 			seenDisplay[displayAddr] = struct{}{}
 			list = append(list, displayAddr)
+
+			dialAddr := p.getDialableAddress(addr)
+			if dialAddr != "" {
+				if _, taken := seenDialable[dialAddr]; !taken {
+					seenDialable[dialAddr] = struct{}{}
+					dialable = append(dialable, dialAddr)
+				}
+			}
 		}
 	}
 
 	p.Peers = list
+	p.dialablePeers = dialable
 }
 
 // IsNewPeer checks if address is in untried peer table [N-16]
@@ -2633,13 +3198,18 @@ func (p *PeerServer) RecordPeerSuccess(addr string, height int, networkID string
 		}
 	}
 
-	// F-01: Preserve existing pinned certificate fingerprint if already recorded in tried or new peers
+	// F-01: Preserve existing pinned certificate fingerprint and SeedHost if already recorded in tried or new peers
 	existingFP := ""
+	existingSeedHost := ""
 	if oldTriedCopy != nil {
 		existingFP = oldTriedCopy.CertFingerprint
+		existingSeedHost = oldTriedCopy.SeedHost
 	}
 	if existingFP == "" && oldNewCopy != nil {
 		existingFP = oldNewCopy.CertFingerprint
+	}
+	if existingSeedHost == "" && oldNewCopy != nil {
+		existingSeedHost = oldNewCopy.SeedHost
 	}
 
 	if p.newPeers != nil {
@@ -2650,6 +3220,7 @@ func (p *PeerServer) RecordPeerSuccess(addr string, height int, networkID string
 	}
 	p.triedPeers[addr] = &PeerInfo{
 		Address:         addr,
+		SeedHost:        existingSeedHost,
 		LastSeen:        time.Now(),
 		Failures:        0,
 		Height:          height,
@@ -2921,10 +3492,16 @@ func (p *PeerServer) SetDataDir(dir string) error {
 	p.newPeers = make(map[string]*PeerInfo)
 	p.triedPeers = make(map[string]*PeerInfo)
 	p.Peers = []string{}
+	p.dialablePeers = nil
 	p.failedPins = make(map[string]string)
 	p.pendingTOFU = make(map[string]*pendingPin)
 	p.peerStoreCorrupted = false
 	p.Lock.Unlock()
+
+	p.inboundIdentityMu.Lock()
+	p.inboundFingerprints = make(map[string]struct{})
+	p.inboundFingerprintOrder = nil
+	p.inboundIdentityMu.Unlock()
 
 	p.closeOutboundSessions(nil)
 	p.loadPeers()
@@ -2975,10 +3552,16 @@ func (p *PeerServer) SetNetworkID(netID string) error {
 	p.newPeers = make(map[string]*PeerInfo)
 	p.triedPeers = make(map[string]*PeerInfo)
 	p.Peers = []string{}
+	p.dialablePeers = nil
 	p.failedPins = make(map[string]string)
 	p.pendingTOFU = make(map[string]*pendingPin)
 	p.peerStoreCorrupted = false
 	p.Lock.Unlock()
+
+	p.inboundIdentityMu.Lock()
+	p.inboundFingerprints = make(map[string]struct{})
+	p.inboundFingerprintOrder = nil
+	p.inboundIdentityMu.Unlock()
 
 	p.closeOutboundSessions(nil)
 	p.loadPeers()
@@ -3046,10 +3629,27 @@ func (p *PeerServer) loadPeers() {
 			p.preserveCorruptPeerStore(path, data, fmt.Sprintf("Peer store has invalid/missing peers list in %s", path))
 			return
 		}
-		for _, fingerprint := range store.InboundFingerprints {
-			if fingerprint != "" {
-				p.inboundFingerprints[fingerprint] = struct{}{}
+		if len(store.InboundFingerprints) > 0 {
+			p.inboundIdentityMu.Lock()
+			if p.inboundFingerprints == nil {
+				p.inboundFingerprints = make(map[string]struct{})
 			}
+			for _, fingerprint := range store.InboundFingerprints {
+				if fingerprint == "" {
+					continue
+				}
+				if _, exists := p.inboundFingerprints[fingerprint]; exists {
+					continue
+				}
+				for len(p.inboundFingerprints) >= MaxInboundFingerprints && len(p.inboundFingerprintOrder) > 0 {
+					oldest := p.inboundFingerprintOrder[0]
+					p.inboundFingerprintOrder = p.inboundFingerprintOrder[1:]
+					delete(p.inboundFingerprints, oldest)
+				}
+				p.inboundFingerprints[fingerprint] = struct{}{}
+				p.inboundFingerprintOrder = append(p.inboundFingerprintOrder, fingerprint)
+			}
+			p.inboundIdentityMu.Unlock()
 		}
 
 		now := time.Now()
@@ -3185,13 +3785,9 @@ func (p *PeerServer) savePeersLocked() error {
 	}
 
 	store := VersionedPeerStore{
-		Version:             1,
-		NetworkID:           p.getNetworkIDLocked(),
-		Peers:               make([]*PeerInfo, 0, len(p.triedPeers)+len(p.newPeers)),
-		InboundFingerprints: make([]string, 0, len(p.inboundFingerprints)),
-	}
-	for fingerprint := range p.inboundFingerprints {
-		store.InboundFingerprints = append(store.InboundFingerprints, fingerprint)
+		Version:   1,
+		NetworkID: p.getNetworkIDLocked(),
+		Peers:     make([]*PeerInfo, 0, len(p.triedPeers)+len(p.newPeers)),
 	}
 	// Deep-copy every PeerInfo value while holding p.Lock.RLock() [P1 Final Blocker]
 	for _, info := range p.triedPeers {
@@ -3320,6 +3916,89 @@ func (p *PeerServer) savePeersLocked() error {
 	return nil
 }
 
+// ingestPeerAddresses processes inbound PEERS_LIST entries with bounded slice length, bounded new disk
+// persistence writes, and at most one self-announcement reachability probe per message.
+func (p *PeerServer) ingestPeerAddresses(peers []string, selfRemoteIP string, quitCh <-chan struct{}) {
+	if len(peers) > maxInboundPeersPerMessage {
+		peers = peers[:maxInboundPeersPerMessage]
+	}
+	addedNew := 0
+	selfAnnounced := false
+	for _, rawPeer := range peers {
+		if quitCh != nil {
+			select {
+			case <-quitCh:
+				return
+			default:
+			}
+		}
+		trimmedPeer := strings.TrimSpace(rawPeer)
+		if trimmedPeer == "" {
+			continue
+		}
+		if selfRemoteIP != "" {
+			host, portStr, splitErr := net.SplitHostPort(trimmedPeer)
+			if splitErr == nil && (host == "" || host == "0.0.0.0" || host == "::") && portStr != "" {
+				if !selfAnnounced {
+					candidate := net.JoinHostPort(selfRemoteIP, portStr)
+					p.verifyAndAddInboundPeer(candidate)
+					selfAnnounced = true
+					if addedNew >= maxNewPeersPerMessage {
+						return
+					}
+				}
+				continue
+			}
+		}
+		if addedNew >= maxNewPeersPerMessage {
+			if selfRemoteIP == "" || selfAnnounced {
+				return
+			}
+			continue
+		}
+		if !p.isPeerUnreachable(trimmedPeer) && !p.isSelfPeerAddress(trimmedPeer) {
+			existed := p.HasPeer(trimmedPeer)
+			if err := p.AddPeer(trimmedPeer); err == nil && !existed && p.HasPeer(trimmedPeer) {
+				addedNew++
+				if addedNew >= maxNewPeersPerMessage && (selfRemoteIP == "" || selfAnnounced) {
+					return
+				}
+			}
+		}
+	}
+}
+
+// ingestDHTNodes processes inbound DHT_NODES entries capped at KademliaK and maxNewPeersPerMessage new inserts.
+func (p *PeerServer) ingestDHTNodes(nodes []DHTNodeInfo, quitCh <-chan struct{}) {
+	if len(nodes) > KademliaK {
+		nodes = nodes[:KademliaK]
+	}
+	addedNew := 0
+	for _, node := range nodes {
+		if quitCh != nil {
+			select {
+			case <-quitCh:
+				return
+			default:
+			}
+		}
+		if p.isPeerUnreachable(node.Address) || p.isSelfPeerAddress(node.Address) {
+			continue
+		}
+		if !p.HasPeer(node.Address) {
+			if addedNew >= maxNewPeersPerMessage {
+				return
+			}
+			p.DHT.Update(node.Address)
+			if err := p.AddPeer(node.Address); err == nil && p.HasPeer(node.Address) {
+				addedNew++
+			}
+		} else {
+			p.DHT.Update(node.Address)
+		}
+	}
+}
+
 // startPeerDiscoveryGossip periodically queries known peers for newly discovered network nodes
 func (p *PeerServer) startPeerDiscoveryGossip(cycle *serverCycle) {
 	defer cycle.wg.Done()
@@ -3340,7 +4019,7 @@ func (p *PeerServer) startPeerDiscoveryGossip(cycle *serverCycle) {
 			}
 		}
 
-		peers := p.GetPeers()
+		peers := p.GetDialablePeers()
 		if len(peers) == 0 {
 			continue
 		}
@@ -3397,16 +4076,7 @@ func (p *PeerServer) startPeerDiscoveryGossip(cycle *serverCycle) {
 					var peerList []string
 					b, _ := json.Marshal(resp.Payload)
 					if json.Unmarshal(b, &peerList) == nil {
-						for _, newPeer := range peerList {
-							select {
-							case <-cycle.quitChan:
-								return
-							default:
-							}
-							if !p.isPeerUnreachable(newPeer) && !p.isSelfPeerAddress(newPeer) {
-								_ = p.AddPeer(newPeer)
-							}
-						}
+						p.ingestPeerAddresses(peerList, "", cycle.quitChan)
 					}
 				}
 
@@ -3434,17 +4104,7 @@ func (p *PeerServer) startPeerDiscoveryGossip(cycle *serverCycle) {
 					var discovered []DHTNodeInfo
 					b, _ := json.Marshal(dhtResp.Payload)
 					if json.Unmarshal(b, &discovered) == nil {
-						for _, node := range discovered {
-							select {
-							case <-cycle.quitChan:
-								return
-							default:
-							}
-							if !p.isPeerUnreachable(node.Address) && !p.isSelfPeerAddress(node.Address) {
-								p.DHT.Update(node.Address)
-								_ = p.AddPeer(node.Address)
-							}
-						}
+						p.ingestDHTNodes(discovered, cycle.quitChan)
 					}
 				}
 			}(peer, done)
@@ -3478,7 +4138,7 @@ func (p *PeerServer) startSyncWorker(cycle *serverCycle) {
 		case <-syncTicker.C:
 			// Isolated (empty address book) or periodic refresh: re-dial seeds so a node that lost
 			// its internet link rejoins the network without a restart.
-			if len(p.GetPeers()) == 0 {
+			if len(p.GetDialablePeers()) == 0 && len(p.GetPeers()) == 0 {
 				p.clearAllPeerUnreachable()
 				p.ReseedPeers()
 			} else if syncCycle%4 == 3 {
@@ -3612,6 +4272,10 @@ func (p *PeerServer) runCycle(cycle *serverCycle, listener net.Listener) {
 	cycle.wg.Add(1)
 	go p.startPeerSessionHeartbeat(cycle)
 
+	// Periodically prune expired entries across runtime maps without holding cross-lock chains.
+	cycle.wg.Add(1)
+	go p.startRuntimeMapGCWorker(cycle)
+
 	fmt.Printf("[P2P] Node actively listening on port %s (Network ID: %s | Max Peers: %d)...\n", p.Port, p.GetNetworkID(), p.MaxPeers)
 
 	for {
@@ -3663,49 +4327,31 @@ func (p *PeerServer) runCycle(cycle *serverCycle, listener net.Listener) {
 		}
 
 		p.Lock.RLock()
-		maxPeers := p.MaxPeers
 		disableSubnetLimit := p.DisableSubnetLimit
 		requireTLS := p.RequireTLS
 		p2pTOFU := p.P2PTOFU
 		p.Lock.RUnlock()
 
-		// Enforce maximum concurrent active connections to prevent socket exhaustion
-		if atomic.LoadInt32(&p.ActiveConns) >= int32(maxPeers) {
-			_ = conn.SetDeadline(time.Now().Add(1 * time.Second))
-			_, _ = conn.Write([]byte("ERROR: Connection limit exceeded\n"))
-			cycle.connsMu.Lock()
-			delete(cycle.activeConns, conn)
-			cycle.connsMu.Unlock()
-			_ = conn.Close()
-			continue
-		}
-
-		// Sybil & Eclipse attack prevention: limit connections per subnet [N-12]
 		remoteSubnet := extractSubnet(conn.RemoteAddr().String())
-		p.connLock.Lock()
-		if !disableSubnetLimit && remoteSubnet != "127.0.0.1" && p.subnetConns[remoteSubnet] >= MaxPeersPerSubnet {
-			p.connLock.Unlock()
+		releaseSlot, rejectMsg, ok := p.tryReserveInboundSlot(remoteSubnet, disableSubnetLimit)
+		if !ok {
 			_ = conn.SetDeadline(time.Now().Add(1 * time.Second))
-			_, _ = conn.Write([]byte("ERROR: Subnet connection limit reached\n"))
+			_, _ = conn.Write([]byte(rejectMsg))
 			cycle.connsMu.Lock()
 			delete(cycle.activeConns, conn)
 			cycle.connsMu.Unlock()
 			_ = conn.Close()
 			continue
 		}
-		p.subnetConns[remoteSubnet]++
-		p.connLock.Unlock()
-
-		atomic.AddInt32(&p.ActiveConns, 1)
 
 		// Run the transport upgrade and session in their own goroutine so a silent client cannot
 		// stall the accept loop.
-		go p.serveInboundConn(cycle, conn, remoteSubnet, requireTLS, p2pTOFU)
+		go p.serveInboundConn(cycle, conn, remoteSubnet, requireTLS, p2pTOFU, releaseSlot)
 	}
 }
 
 // serveInboundConn upgrades an accepted connection to TLS (when offered) and runs the P2P session.
-func (p *PeerServer) serveInboundConn(cycle *serverCycle, conn net.Conn, remoteSubnet string, requireTLS, p2pTOFU bool) {
+func (p *PeerServer) serveInboundConn(cycle *serverCycle, conn net.Conn, remoteSubnet string, requireTLS, p2pTOFU bool, releaseSlot func()) {
 	// Opportunistic or strict TLS 1.3 Transport Upgrade [N-08, F1]
 	// The first-byte peek has no timeout of its own, so bound it.
 	_ = conn.SetDeadline(time.Now().Add(InboundHandshakeTimeout))
@@ -3730,14 +4376,9 @@ func (p *PeerServer) serveInboundConn(cycle *serverCycle, conn net.Conn, remoteS
 		cycle.connsMu.Lock()
 		delete(cycle.activeConns, conn)
 		cycle.connsMu.Unlock()
-
-		atomic.AddInt32(&p.ActiveConns, -1)
-		p.connLock.Lock()
-		p.subnetConns[remoteSubnet]--
-		if p.subnetConns[remoteSubnet] <= 0 {
-			delete(p.subnetConns, remoteSubnet)
+		if releaseSlot != nil {
+			releaseSlot()
 		}
-		p.connLock.Unlock()
 		return
 	}
 
@@ -3748,13 +4389,9 @@ func (p *PeerServer) serveInboundConn(cycle *serverCycle, conn net.Conn, remoteS
 	case <-cycle.quitChan:
 		cycle.connsMu.Unlock()
 		_ = secureConn.Close()
-		atomic.AddInt32(&p.ActiveConns, -1)
-		p.connLock.Lock()
-		p.subnetConns[remoteSubnet]--
-		if p.subnetConns[remoteSubnet] <= 0 {
-			delete(p.subnetConns, remoteSubnet)
+		if releaseSlot != nil {
+			releaseSlot()
 		}
-		p.connLock.Unlock()
 		return
 	default:
 		cycle.activeConns[secureConn] = struct{}{}
@@ -3767,25 +4404,21 @@ func (p *PeerServer) serveInboundConn(cycle *serverCycle, conn net.Conn, remoteS
 		delete(cycle.activeConns, secureConn)
 		cycle.connsMu.Unlock()
 		_ = secureConn.Close()
-		atomic.AddInt32(&p.ActiveConns, -1)
-		p.connLock.Lock()
-		p.subnetConns[remoteSubnet]--
-		if p.subnetConns[remoteSubnet] <= 0 {
-			delete(p.subnetConns, remoteSubnet)
+		if releaseSlot != nil {
+			releaseSlot()
 		}
-		p.connLock.Unlock()
 		return
 	}
 
-	go func(sc net.Conn, sn string, doneFunc func()) {
+	go func(sc net.Conn, sn string, doneFunc func(), releaseFn func()) {
 		defer func() {
 			cycle.connsMu.Lock()
 			delete(cycle.activeConns, sc)
 			cycle.connsMu.Unlock()
 			doneFunc()
 		}()
-		p.HandleConnection(sc, sn)
-	}(secureConn, remoteSubnet, done)
+		p.handleConnectionWithRelease(sc, sn, releaseFn)
+	}(secureConn, remoteSubnet, done, releaseSlot)
 }
 
 func (p *PeerServer) teardownCycle(cycle *serverCycle, listener net.Listener) {
@@ -3848,34 +4481,236 @@ type rawInboundMessage struct {
 	Payload   json.RawMessage `json:"payload"`
 }
 
-// readBoundedLine reads a newline-terminated string up to maxBytes.
-// If the stream exceeds maxBytes before encountering a newline, it immediately returns an error [N-13].
-func readBoundedLine(r *bufio.Reader, maxBytes int) (string, error) {
-	var buf strings.Builder
+func (p *PeerServer) activeCycleQuitChan() <-chan struct{} {
+	p.lifecycleLock.RLock()
+	defer p.lifecycleLock.RUnlock()
+	if p.activeCycle == nil {
+		return nil
+	}
+	return p.activeCycle.quitChan
+}
+
+// acquireLargePayloadLease reserves bytes against MaxAggregateLargePayloadBytes with a bounded (~2s) backpressure wait.
+func (p *PeerServer) acquireLargePayloadLease(needed int64, deadline time.Time, quitCh <-chan struct{}) (func(), bool) {
+	if p == nil || needed <= 0 {
+		return func() {}, true
+	}
+	if needed > MaxAggregateLargePayloadBytes {
+		return func() {}, false
+	}
+
+	waitLimit := LargePayloadAcquireTimeout
+	if !deadline.IsZero() {
+		rem := time.Until(deadline)
+		if rem <= 0 {
+			return func() {}, false
+		}
+		if rem < waitLimit {
+			waitLimit = rem
+		}
+	}
+	waitUntil := time.Now().Add(waitLimit)
+
+	for {
+		select {
+		case <-quitCh:
+			return func() {}, false
+		default:
+		}
+
+		p.largePayloadMu.Lock()
+		if p.largePayloadUsed+needed <= MaxAggregateLargePayloadBytes {
+			p.largePayloadUsed += needed
+			p.largePayloadMu.Unlock()
+
+			var once sync.Once
+			return func() {
+				once.Do(func() {
+					p.largePayloadMu.Lock()
+					p.largePayloadUsed -= needed
+					if p.largePayloadUsed < 0 {
+						p.largePayloadUsed = 0
+					}
+					if p.largePayloadNotify != nil {
+						close(p.largePayloadNotify)
+						p.largePayloadNotify = nil
+					}
+					p.largePayloadMu.Unlock()
+				})
+			}, true
+		}
+		remWait := time.Until(waitUntil)
+		if remWait <= 0 {
+			p.largePayloadMu.Unlock()
+			return func() {}, false
+		}
+		if p.largePayloadNotify == nil {
+			p.largePayloadNotify = make(chan struct{})
+		}
+		notifyCh := p.largePayloadNotify
+		p.largePayloadMu.Unlock()
+
+		timer := time.NewTimer(remWait)
+		select {
+		case <-notifyCh:
+			timer.Stop()
+		case <-timer.C:
+			return func() {}, false
+		case <-quitCh:
+			timer.Stop()
+			return func() {}, false
+		}
+	}
+}
+
+func (p *PeerServer) acquirePushDecompressSlot(deadline time.Time, quitCh <-chan struct{}) (func(), bool) {
+	p.pushDecompressMu.Lock()
+	if p.pushDecompressSem == nil {
+		p.pushDecompressSem = make(chan struct{}, maxConcurrentPushDecompress)
+	}
+	sem := p.pushDecompressSem
+	p.pushDecompressMu.Unlock()
+
+	select {
+	case <-quitCh:
+		return func() {}, false
+	default:
+	}
+
+	waitLimit := LargePayloadAcquireTimeout
+	if !deadline.IsZero() {
+		rem := time.Until(deadline)
+		if rem <= 0 {
+			return func() {}, false
+		}
+		if rem < waitLimit {
+			waitLimit = rem
+		}
+	}
+
+	select {
+	case sem <- struct{}{}:
+		var once sync.Once
+		return func() {
+			once.Do(func() { <-sem })
+		}, true
+	default:
+	}
+
+	timer := time.NewTimer(waitLimit)
+	select {
+	case sem <- struct{}{}:
+		timer.Stop()
+		var once sync.Once
+		return func() {
+			once.Do(func() { <-sem })
+		}, true
+	case <-timer.C:
+		return func() {}, false
+	case <-quitCh:
+		timer.Stop()
+		return func() {}, false
+	}
+}
+
+// readBoundedLineBytes reads a newline-terminated frame up to maxBytes without string conversion copies.
+// When onLarge is non-nil and the buffered frame exceeds LargePayloadThresholdBytes, it acquires a lease
+// from the aggregate large-payload budget and returns a release closure to the caller.
+func readBoundedLineBytes(r *bufio.Reader, maxBytes int, onLarge func() (func(), bool)) ([]byte, func(), error) {
+	var buf bytes.Buffer
+	releaseLease := func() {}
+	leaseAcquired := false
+	releaseOnError := func() {
+		if leaseAcquired {
+			releaseLease()
+			releaseLease = func() {}
+			leaseAcquired = false
+		}
+	}
+
 	for {
 		chunk, isPrefix, err := r.ReadLine()
 		if err != nil {
-			return "", err
+			releaseOnError()
+			return nil, func() {}, err
 		}
 		if buf.Len()+len(chunk) > maxBytes {
-			return "", fmt.Errorf("message size exceeds hard limit of %d bytes", maxBytes)
+			releaseOnError()
+			return nil, func() {}, fmt.Errorf("message size exceeds hard limit of %d bytes", maxBytes)
+		}
+		if !leaseAcquired && onLarge != nil && buf.Len()+len(chunk) > LargePayloadThresholdBytes {
+			rel, ok := onLarge()
+			if !ok {
+				return nil, func() {}, errLargePayloadBudgetExhausted
+			}
+			if rel != nil {
+				releaseLease = rel
+			}
+			leaseAcquired = true
 		}
 		buf.Write(chunk)
 		if !isPrefix {
 			break
 		}
 	}
-	return buf.String(), nil
+	return buf.Bytes(), releaseLease, nil
+}
+
+// readBoundedLine reads a newline-terminated string up to maxBytes.
+// If the stream exceeds maxBytes before encountering a newline, it immediately returns an error [N-13].
+func readBoundedLine(r *bufio.Reader, maxBytes int) (string, error) {
+	data, rel, err := readBoundedLineBytes(r, maxBytes, nil)
+	if rel != nil {
+		rel()
+	}
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+type inboundConnSession struct {
+	conn                  net.Conn
+	remoteIP              string
+	remoteAddr            string
+	p2pTOFU               bool
+	quitCh                <-chan struct{}
+	readTimeout           time.Duration
+	deadline              time.Time
+	identityChecked       bool
+	pendingFingerprint    string
+	registeredActive      bool
+	connMempoolTokens     float64
+	connMempoolLastRefill time.Time
 }
 
 // HandleConnection processes incoming P2P messages in a persistent stream loop [N-02]
 func (p *PeerServer) HandleConnection(conn net.Conn, subnet string) {
-	registeredActive := false
-	identityChecked := false
-	pendingFingerprint := ""
+	p.handleConnectionWithRelease(conn, subnet, nil)
+}
+
+func (p *PeerServer) handleConnectionWithRelease(conn net.Conn, subnet string, releaseSlot func()) {
+	p.Lock.RLock()
+	p2pTOFU := p.P2PTOFU
+	p.Lock.RUnlock()
+
+	remoteAddr := conn.RemoteAddr().String()
+	remoteIP := extractHost(remoteAddr)
+
+	sess := inboundConnSession{
+		conn:                  conn,
+		remoteIP:              remoteIP,
+		remoteAddr:            remoteAddr,
+		p2pTOFU:               p2pTOFU,
+		quitCh:                p.activeCycleQuitChan(),
+		readTimeout:           InboundHandshakeTimeout,
+		deadline:              time.Now().Add(InboundHandshakeTimeout),
+		connMempoolTokens:     3.0,
+		connMempoolLastRefill: time.Now(),
+	}
 
 	defer func() {
-		if registeredActive {
+		if sess.registeredActive {
 			p.inboundSessionsMu.Lock()
 			delete(p.activeInboundConns, conn)
 			p.inboundSessionsMu.Unlock()
@@ -3887,28 +4722,33 @@ func (p *PeerServer) HandleConnection(conn net.Conn, subnet string) {
 			atomic.LoadInt32(&p.ActiveConns),
 		)
 		_ = conn.Close()
-		atomic.AddInt32(&p.ActiveConns, -1)
-		p.connLock.Lock()
-		p.subnetConns[subnet]--
-		if p.subnetConns[subnet] <= 0 {
-			delete(p.subnetConns, subnet)
+		if releaseSlot != nil {
+			releaseSlot()
+		} else {
+			atomic.AddInt32(&p.ActiveConns, -1)
+			p.connLock.Lock()
+			p.subnetConns[subnet]--
+			if p.subnetConns[subnet] <= 0 {
+				delete(p.subnetConns, subnet)
+			}
+			p.connLock.Unlock()
 		}
-		p.connLock.Unlock()
 	}()
 
 	reader := bufio.NewReader(conn)
-	remoteAddr := conn.RemoteAddr().String()
-	remoteIP := extractHost(remoteAddr)
 	if p.IsBanned(remoteIP) {
 		return
 	}
 
-	readTimeout := InboundHandshakeTimeout
-
-	// Keep reading messages until client disconnects or times out [N-02]
+	// Keep reading messages until client disconnects, is banned, or deadline expires [N-02]
 	for {
-		_ = conn.SetDeadline(time.Now().Add(readTimeout))
-		messageStr, err := readBoundedLine(reader, MaxIncomingPacketSize)
+		if p.IsBanned(remoteIP) {
+			return
+		}
+		_ = conn.SetDeadline(sess.deadline)
+		rawLine, releaseLease, err := readBoundedLineBytes(reader, MaxIncomingPacketSize, func() (func(), bool) {
+			return p.acquireLargePayloadLease(MaxIncomingPacketSize, sess.deadline, sess.quitCh)
+		})
 		if err != nil {
 			// Suppress expected EOF, timeout, and peer reset disconnects to prevent log spam.
 			if !isBenignDisconnectErr(err) {
@@ -3921,349 +4761,375 @@ func (p *PeerServer) HandleConnection(conn net.Conn, subnet string) {
 			return
 		}
 
-		trimmed := strings.TrimSpace(messageStr)
-		if len(trimmed) == 0 {
-			continue
-		}
-
-		var msg rawInboundMessage
-		if err := json.Unmarshal([]byte(trimmed), &msg); err != nil {
-			p.AddBanScore(remoteIP, 10)
-			continue // Discard malformed packet
-		}
-
-		// Network protocol magic validation (drop cross-chain / alien packets) [C-33]
-		if msg.NetworkID != p.GetNetworkID() {
-			p.AddBanScore(remoteIP, 10)
-			continue
-		}
-
-		// Rate limiting and abusive behavior ban score [N-15, T1].
-		if p.IsBanned(remoteIP) {
-			continue
-		}
-		if !p.AllowMessage(remoteIP, msg.Type) {
-			continue
-		}
-
-		if !identityChecked {
-			pendingFingerprint = extractCertPubkeyFingerprint(conn)
-			if pendingFingerprint != "" && p.P2PTOFU {
-				if err := p.verifyOrRecordInboundIdentity(pendingFingerprint); err != nil {
-					core.LogDebug(core.LogCategoryDiscovery, "Rejected inbound peer identity from %s: %v", remoteAddr, err)
-					return
-				}
-			}
-			identityChecked = true
-		}
-
-		// Extend socket read deadline once peer is authenticated on matching network ID to prevent disconnect/reconnect churn.
-		if readTimeout != AuthenticatedIdleTimeout && (!p.P2PTOFU || pendingFingerprint != "") {
-			readTimeout = AuthenticatedIdleTimeout
-			if remoteIP != "" && p.Port != "" {
-				if ip := net.ParseIP(remoteIP); ip != nil && !ip.IsLoopback() {
-					p.verifyAndAddInboundPeer(net.JoinHostPort(remoteIP, p.Port))
-				}
-			}
-		} else if readTimeout == InboundHandshakeTimeout {
-			// First valid message arrived in time but the peer is not (yet) authenticated: use the previous idle limit.
-			readTimeout = SocketTimeoutDuration
-		}
-
-		switch msg.Type {
-		case "NEW_BLOCK":
-			var block core.Block
-			if len(msg.Payload) == 0 || json.Unmarshal(msg.Payload, &block) != nil {
-				continue
-			}
-			p.ProcessIncomingBlock(block, remoteIP, remoteAddr)
-
-		case "PUSH_BLOCKS":
-			var pr BlockRangeResponse
-			if len(msg.Payload) == 0 || json.Unmarshal(msg.Payload, &pr) != nil {
-				continue
-			}
-			if err := pr.expandBlocks(); err != nil {
-				core.LogWarn(core.LogCategoryNet, "Bad compressed PUSH_BLOCKS from peer %s: %v", remoteIP, err)
-				p.AddBanScore(remoteIP, 10)
-				continue
-			}
-			p.handlePushedBlocks(pr.Blocks, remoteIP, remoteAddr)
-
-		case "GET_HEIGHT":
-			p.Blockchain.Lock.RLock()
-			latest := p.Blockchain.GetLatestBlockUnsafe()
-			cw := p.Blockchain.GetTotalChainworkUnsafe().String()
-			p.Blockchain.Lock.RUnlock()
-
-			respData, err := json.Marshal(Message{
-				NetworkID: p.GetNetworkID(),
-				Type:      "HEIGHT_RESPONSE",
-				Payload:   HeightResponse{Height: latest.Index, LatestHash: latest.Hash, Chainwork: cw},
-			})
-			if err != nil {
-				return
-			}
-			_ = conn.SetWriteDeadline(time.Now().Add(SocketTimeoutDuration))
-			if _, err := conn.Write(append(respData, '\n')); err != nil {
-				return
-			}
-			if !registeredActive {
-				if pendingFingerprint != "" || !p.P2PTOFU {
-					p.inboundSessionsMu.Lock()
-					if p.activeInboundConns == nil {
-						p.activeInboundConns = make(map[net.Conn]string)
-					}
-					p.activeInboundConns[conn] = remoteAddr
-					p.inboundSessionsMu.Unlock()
-					registeredActive = true
-				}
-			}
-
-		case "GET_BLOCK_RANGE":
-			var req BlockRangeRequest
-			if err := json.Unmarshal(msg.Payload, &req); err == nil && req.FromIndex >= 0 && req.ToIndex >= req.FromIndex {
-				if req.ToIndex-req.FromIndex >= SyncChunkSize {
-					req.ToIndex = req.FromIndex + SyncChunkSize - 1
-				}
-
-				var blocks []core.Block
-				p.Blockchain.Lock.RLock()
-				chainLen := len(p.Blockchain.Chain)
-				end := req.ToIndex
-				if end >= chainLen {
-					end = chainLen - 1
-				}
-
-				totalBytes := 0
-				for i := req.FromIndex; i <= end && i < chainLen; i++ {
-					blk := p.Blockchain.Chain[i]
-					blkSize := blk.Size()
-					// Bounding total chunk size to MaxBlockRangeResponseBytes >= MaxBlockSize [P2-4]
-					// Always return at least 1 block even if single block exceeds byte threshold
-					if len(blocks) > 0 && totalBytes+blkSize > MaxBlockRangeResponseBytes {
-						end = i - 1
-						break
-					}
-					totalBytes += blkSize
-					blocks = append(blocks, blk)
-				}
-				p.Blockchain.Lock.RUnlock()
-
-				// Send response containing the real upper bound (end) processed
-				resp := BlockRangeResponse{FromIndex: req.FromIndex, ToIndex: end, Blocks: blocks}
-				if acceptsDeflate(req.Accept) {
-					if z := compressBlocks(blocks); z != "" {
-						resp.Blocks, resp.Enc, resp.Z = nil, encDeflate, z
-					}
-				}
-				respData, err := json.Marshal(Message{
-					NetworkID: p.GetNetworkID(),
-					Type:      "BLOCK_RANGE_RESPONSE",
-					Payload:   resp,
-				})
-				if err == nil {
-					_ = conn.SetWriteDeadline(time.Now().Add(SocketTimeoutDuration))
-					_, _ = conn.Write(append(respData, '\n'))
-				}
-			}
-
-		case "GET_FORKPOINT":
-			var req ForkpointRequest
-			if err := json.Unmarshal(msg.Payload, &req); err == nil && len(req.Locators) > 0 {
-				// Bound max evaluated locators to 64 [T6]
-				if len(req.Locators) > 64 {
-					req.Locators = req.Locators[:64]
-				}
-
-				p.Blockchain.Lock.RLock()
-				ancestorHeight := -1
-				var ancestorHash string
-
-				// Find highest matching locator in local chain using O(1) store index lookup [T6]
-				for _, loc := range req.Locators {
-					cleanLoc := strings.ToLower(strings.TrimSpace(loc))
-					if len(cleanLoc) != 64 {
-						continue
-					}
-					if b, err := p.Blockchain.GetBlockByHash(cleanLoc); err == nil && b != nil {
-						if b.Index < len(p.Blockchain.Chain) && p.Blockchain.Chain[b.Index].Hash == b.Hash {
-							ancestorHeight = b.Index
-							ancestorHash = b.Hash
-							break
-						}
-					}
-				}
-				if ancestorHeight == -1 {
-					ancestorHeight = 0
-					if len(p.Blockchain.Chain) > 0 {
-						ancestorHash = p.Blockchain.Chain[0].Hash
-					} else {
-						ancestorHash = core.GenesisHash
-					}
-				}
-				p.Blockchain.Lock.RUnlock()
-
-				respData, err := json.Marshal(Message{
-					NetworkID: p.GetNetworkID(),
-					Type:      "FORKPOINT_RESPONSE",
-					Payload: ForkpointResponse{
-						AncestorHeight: ancestorHeight,
-						AncestorHash:   ancestorHash,
-					},
-				})
-				if err == nil {
-					_ = conn.SetWriteDeadline(time.Now().Add(SocketTimeoutDuration))
-					_, _ = conn.Write(append(respData, '\n'))
-				}
-			}
-
-		case "NEW_TX":
-			var tx core.Transaction
-			if len(msg.Payload) == 0 || json.Unmarshal(msg.Payload, &tx) != nil {
-				continue
-			}
-			p.ProcessIncomingTx(tx, remoteIP)
-
-		case "GET_MEMPOOL":
-			if p.Blockchain == nil {
-				continue
-			}
-			p.Blockchain.Lock.RLock()
-			totalMp := len(p.Blockchain.Mempool)
-			mempoolTxs := make([]core.Transaction, totalMp)
-			copy(mempoolTxs, p.Blockchain.Mempool)
-			p.Blockchain.Lock.RUnlock()
-
-			if len(mempoolTxs) > 100 {
-				mempoolTxs = mempoolTxs[:100]
-			}
-			respData, err := json.Marshal(Message{
-				NetworkID: p.GetNetworkID(),
-				Type:      "MEMPOOL_RESPONSE",
-				Payload:   mempoolTxs,
-			})
-			if err == nil {
-				_ = conn.SetWriteDeadline(time.Now().Add(SocketTimeoutDuration))
-				_, _ = conn.Write(append(respData, '\n'))
-			}
-
-		case "MEMPOOL_RESPONSE":
-			var txList []core.Transaction
-			if len(msg.Payload) > 0 && json.Unmarshal(msg.Payload, &txList) == nil {
-				// Bound max incoming txs per MEMPOOL_RESPONSE to 100 [T5]
-				if len(txList) > 100 {
-					txList = txList[:100]
-				}
-				for _, tx := range txList {
-					p.ProcessIncomingTx(tx, remoteIP)
-				}
-			}
-
-		case "GET_PEERS":
-			allPeers := p.GetPeers()
-			peers := make([]string, 0, len(allPeers))
-			for _, candidate := range allPeers {
-				if p.isPeerUnreachable(candidate) || p.isSelfPeerAddress(candidate) {
-					continue
-				}
-				if remoteIP != "" && remoteIP != "127.0.0.1" && remoteIP != "::1" && extractHost(candidate) == remoteIP {
-					continue
-				}
-				if p.isPeerStale(candidate) {
-					continue
-				}
-				// Do not gossip unverified non-seed peers: only advertise peers that the local node
-				// has actually verified (handshaked) and are not stale [P2P gossip hardening].
-				if !p.isSeedPeer(candidate) && !p.isPeerVerified(candidate) {
-					continue
-				}
-				peers = append(peers, candidate)
-			}
-			if len(peers) > MaxPeersPerResponse {
-				peers = peers[:MaxPeersPerResponse]
-			}
-			respData, err := json.Marshal(Message{
-				NetworkID: p.GetNetworkID(),
-				Type:      "PEERS_LIST",
-				Payload:   peers,
-			})
-			if err == nil {
-				_ = conn.SetWriteDeadline(time.Now().Add(SocketTimeoutDuration))
-				_, _ = conn.Write(append(respData, '\n'))
-			}
-
-		case "PEERS_LIST":
-			if p.P2PTOFU && pendingFingerprint == "" {
-				continue
-			}
-			var peerList []string
-			if json.Unmarshal(msg.Payload, &peerList) == nil {
-				for _, newPeer := range peerList {
-					trimmedPeer := strings.TrimSpace(newPeer)
-					if trimmedPeer == "" {
-						continue
-					}
-					host, portStr, splitErr := net.SplitHostPort(trimmedPeer)
-					if splitErr == nil && (host == "" || host == "0.0.0.0" || host == "::") && portStr != "" {
-						// Self-announcement from remote peer: combine remoteIP with announced listening port
-						// and verify reachability asynchronously before adding to address book.
-						candidate := net.JoinHostPort(remoteIP, portStr)
-						p.verifyAndAddInboundPeer(candidate)
-						continue
-					}
-					if !p.isPeerUnreachable(trimmedPeer) && !p.isSelfPeerAddress(trimmedPeer) {
-						_ = p.AddPeer(trimmedPeer)
-					}
-				}
-			}
-
-		case "DHT_PING":
-			respData, err := json.Marshal(Message{
-				NetworkID: p.GetNetworkID(),
-				Type:      "DHT_PONG",
-				Payload:   p.DHT.FindClosestNodes(p.DHT.LocalNode.ID, 8),
-			})
-			if err == nil {
-				_ = conn.SetWriteDeadline(time.Now().Add(SocketTimeoutDuration))
-				_, _ = conn.Write(append(respData, '\n'))
-			}
-
-		case "DHT_FIND_NODE":
-			var targetHex string
-			_ = json.Unmarshal(msg.Payload, &targetHex)
-			var targetID [32]byte
-			if tBytes, err := hex.DecodeString(targetHex); err == nil && len(tBytes) == 32 {
-				copy(targetID[:], tBytes)
-			} else {
-				targetID = p.DHT.LocalNode.ID
-			}
-			closest := p.DHT.FindClosestNodes(targetID, KademliaK)
-			respData, err := json.Marshal(Message{
-				NetworkID: p.GetNetworkID(),
-				Type:      "DHT_NODES",
-				Payload:   closest,
-			})
-			if err == nil {
-				_ = conn.SetWriteDeadline(time.Now().Add(SocketTimeoutDuration))
-				_, _ = conn.Write(append(respData, '\n'))
-			}
-
-		case "DHT_NODES":
-			if p.P2PTOFU && pendingFingerprint == "" {
-				continue
-			}
-			var discovered []DHTNodeInfo
-			if err := json.Unmarshal(msg.Payload, &discovered); err == nil {
-				for _, node := range discovered {
-					if !p.isPeerUnreachable(node.Address) && !p.isSelfPeerAddress(node.Address) {
-						p.DHT.Update(node.Address)
-						_ = p.AddPeer(node.Address)
-					}
-				}
-			}
+		if !p.processInboundFrame(&sess, rawLine, releaseLease) {
+			return
 		}
 	}
+}
+
+func (p *PeerServer) processInboundFrame(sess *inboundConnSession, rawLine []byte, releaseLease func()) bool {
+	if releaseLease != nil {
+		defer releaseLease()
+	}
+
+	trimmed := bytes.TrimSpace(rawLine)
+	if len(trimmed) == 0 {
+		return true
+	}
+
+	var msg rawInboundMessage
+	if err := json.Unmarshal(trimmed, &msg); err != nil {
+		p.AddBanScore(sess.remoteIP, 10)
+		return !p.IsBanned(sess.remoteIP)
+	}
+
+	// Network protocol magic validation (drop cross-chain / alien packets) [C-33]
+	if msg.NetworkID != p.GetNetworkID() {
+		p.AddBanScore(sess.remoteIP, 10)
+		return !p.IsBanned(sess.remoteIP)
+	}
+
+	// Rate limiting and abusive behavior ban score [N-15, T1]; immediately disconnect if already or newly banned.
+	if p.IsBanned(sess.remoteIP) {
+		return false
+	}
+	if !p.AllowMessage(sess.remoteIP, msg.Type) {
+		return !p.IsBanned(sess.remoteIP)
+	}
+
+	// Per-connection GET_MEMPOOL rate limit (burst 3, refill 1/20s) paired with per-IP NAT aggregate bucket.
+	if msg.Type == "GET_MEMPOOL" && !p.isRateLimitDisabled() && !p.isWhitelisted(sess.remoteIP) {
+		now := time.Now()
+		if elapsed := now.Sub(sess.connMempoolLastRefill).Seconds(); elapsed > 0 {
+			sess.connMempoolTokens += elapsed * (1.0 / 20.0)
+			if sess.connMempoolTokens > 3.0 {
+				sess.connMempoolTokens = 3.0
+			}
+			sess.connMempoolLastRefill = now
+		}
+		if sess.connMempoolTokens < 1.0 {
+			return true
+		}
+		sess.connMempoolTokens -= 1.0
+	}
+
+	if !sess.identityChecked {
+		sess.pendingFingerprint = extractCertPubkeyFingerprint(sess.conn)
+		if sess.pendingFingerprint != "" && sess.p2pTOFU {
+			if err := p.verifyOrRecordInboundIdentity(sess.pendingFingerprint); err != nil {
+				core.LogDebug(core.LogCategoryDiscovery, "Rejected inbound peer identity from %s: %v", sess.remoteAddr, err)
+				return false
+			}
+		}
+		sess.identityChecked = true
+	}
+
+	// Extend socket read deadline strictly after peer passes network, ban, rate, and identity checks.
+	if sess.readTimeout != AuthenticatedIdleTimeout && (!sess.p2pTOFU || sess.pendingFingerprint != "") {
+		sess.readTimeout = AuthenticatedIdleTimeout
+		if sess.remoteIP != "" && p.Port != "" {
+			if ip := net.ParseIP(sess.remoteIP); ip != nil && !ip.IsLoopback() {
+				p.verifyAndAddInboundPeer(net.JoinHostPort(sess.remoteIP, p.Port))
+			}
+		}
+	} else if sess.readTimeout == InboundHandshakeTimeout {
+		sess.readTimeout = SocketTimeoutDuration
+	}
+	sess.deadline = time.Now().Add(sess.readTimeout)
+
+	switch msg.Type {
+	case "NEW_BLOCK":
+		var block core.Block
+		if len(msg.Payload) == 0 || json.Unmarshal(msg.Payload, &block) != nil {
+			return true
+		}
+		p.ProcessIncomingBlock(block, sess.remoteIP, sess.remoteAddr)
+
+	case "PUSH_BLOCKS":
+		var pr BlockRangeResponse
+		if len(msg.Payload) == 0 || json.Unmarshal(msg.Payload, &pr) != nil {
+			return true
+		}
+		msg.Payload = nil
+		if pr.Z != "" || pr.Enc != "" {
+			// Release reader lease first so one connection never holds nested large-payload leases.
+			if releaseLease != nil {
+				releaseLease()
+			}
+			decompRel, ok := p.acquirePushDecompressSlot(sess.deadline, sess.quitCh)
+			if !ok {
+				return false
+			}
+			inflateRel, ok2 := p.acquireLargePayloadLease(MaxIncomingPacketSize, sess.deadline, sess.quitCh)
+			if !ok2 {
+				decompRel()
+				return false
+			}
+			expandErr := pr.expandBlocks()
+			inflateRel()
+			decompRel()
+			if expandErr != nil {
+				core.LogWarn(core.LogCategoryNet, "Bad compressed PUSH_BLOCKS from peer %s: %v", sess.remoteIP, expandErr)
+				p.AddBanScore(sess.remoteIP, 10)
+				return !p.IsBanned(sess.remoteIP)
+			}
+		}
+		p.handlePushedBlocks(pr.Blocks, sess.remoteIP, sess.remoteAddr)
+
+	case "GET_HEIGHT":
+		p.Blockchain.Lock.RLock()
+		latest := p.Blockchain.GetLatestBlockUnsafe()
+		cw := p.Blockchain.GetTotalChainworkUnsafe().String()
+		p.Blockchain.Lock.RUnlock()
+
+		respData, err := json.Marshal(Message{
+			NetworkID: p.GetNetworkID(),
+			Type:      "HEIGHT_RESPONSE",
+			Payload:   HeightResponse{Height: latest.Index, LatestHash: latest.Hash, Chainwork: cw},
+		})
+		if err != nil {
+			return false
+		}
+		_ = sess.conn.SetWriteDeadline(time.Now().Add(SocketTimeoutDuration))
+		if _, err := sess.conn.Write(append(respData, '\n')); err != nil {
+			return false
+		}
+		if !sess.registeredActive {
+			if sess.pendingFingerprint != "" || !sess.p2pTOFU {
+				p.inboundSessionsMu.Lock()
+				if p.activeInboundConns == nil {
+					p.activeInboundConns = make(map[net.Conn]string)
+				}
+				p.activeInboundConns[sess.conn] = sess.remoteAddr
+				p.inboundSessionsMu.Unlock()
+				sess.registeredActive = true
+			}
+		}
+
+	case "GET_BLOCK_RANGE":
+		var req BlockRangeRequest
+		if err := json.Unmarshal(msg.Payload, &req); err == nil && req.FromIndex >= 0 && req.ToIndex >= req.FromIndex {
+			if req.ToIndex-req.FromIndex >= SyncChunkSize {
+				req.ToIndex = req.FromIndex + SyncChunkSize - 1
+			}
+
+			var blocks []core.Block
+			p.Blockchain.Lock.RLock()
+			chainLen := len(p.Blockchain.Chain)
+			end := req.ToIndex
+			if end >= chainLen {
+				end = chainLen - 1
+			}
+
+			totalBytes := 0
+			for i := req.FromIndex; i <= end && i < chainLen; i++ {
+				blk := p.Blockchain.Chain[i]
+				blkSize := blk.Size()
+				// Bounding total chunk size to MaxBlockRangeResponseBytes >= MaxBlockSize [P2-4]
+				// Always return at least 1 block even if single block exceeds byte threshold
+				if len(blocks) > 0 && totalBytes+blkSize > MaxBlockRangeResponseBytes {
+					end = i - 1
+					break
+				}
+				totalBytes += blkSize
+				blocks = append(blocks, blk)
+			}
+			p.Blockchain.Lock.RUnlock()
+
+			// Send response containing the real upper bound (end) processed
+			resp := BlockRangeResponse{FromIndex: req.FromIndex, ToIndex: end, Blocks: blocks}
+			if acceptsDeflate(req.Accept) {
+				if z := compressBlocks(blocks); z != "" {
+					resp.Blocks, resp.Enc, resp.Z = nil, encDeflate, z
+				}
+			}
+			respData, err := json.Marshal(Message{
+				NetworkID: p.GetNetworkID(),
+				Type:      "BLOCK_RANGE_RESPONSE",
+				Payload:   resp,
+			})
+			if err == nil {
+				_ = sess.conn.SetWriteDeadline(time.Now().Add(SocketTimeoutDuration))
+				_, _ = sess.conn.Write(append(respData, '\n'))
+			}
+		}
+
+	case "GET_FORKPOINT":
+		var req ForkpointRequest
+		if err := json.Unmarshal(msg.Payload, &req); err == nil && len(req.Locators) > 0 {
+			// Bound max evaluated locators to 64 [T6]
+			if len(req.Locators) > 64 {
+				req.Locators = req.Locators[:64]
+			}
+
+			p.Blockchain.Lock.RLock()
+			ancestorHeight := -1
+			var ancestorHash string
+
+			// Find highest matching locator in local chain using O(1) store index lookup [T6]
+			for _, loc := range req.Locators {
+				cleanLoc := strings.ToLower(strings.TrimSpace(loc))
+				if len(cleanLoc) != 64 {
+					continue
+				}
+				if b, err := p.Blockchain.GetBlockByHash(cleanLoc); err == nil && b != nil {
+					if b.Index < len(p.Blockchain.Chain) && p.Blockchain.Chain[b.Index].Hash == b.Hash {
+						ancestorHeight = b.Index
+						ancestorHash = b.Hash
+						break
+					}
+				}
+			}
+			if ancestorHeight == -1 {
+				ancestorHeight = 0
+				if len(p.Blockchain.Chain) > 0 {
+					ancestorHash = p.Blockchain.Chain[0].Hash
+				} else {
+					ancestorHash = core.GenesisHash
+				}
+			}
+			p.Blockchain.Lock.RUnlock()
+
+			respData, err := json.Marshal(Message{
+				NetworkID: p.GetNetworkID(),
+				Type:      "FORKPOINT_RESPONSE",
+				Payload: ForkpointResponse{
+					AncestorHeight: ancestorHeight,
+					AncestorHash:   ancestorHash,
+				},
+			})
+			if err == nil {
+				_ = sess.conn.SetWriteDeadline(time.Now().Add(SocketTimeoutDuration))
+				_, _ = sess.conn.Write(append(respData, '\n'))
+			}
+		}
+
+	case "NEW_TX":
+		var tx core.Transaction
+		if len(msg.Payload) == 0 || json.Unmarshal(msg.Payload, &tx) != nil {
+			return true
+		}
+		p.ProcessIncomingTx(tx, sess.remoteIP)
+
+	case "GET_MEMPOOL":
+		if p.Blockchain == nil {
+			return true
+		}
+		p.Blockchain.Lock.RLock()
+		totalMp := len(p.Blockchain.Mempool)
+		mempoolTxs := make([]core.Transaction, totalMp)
+		copy(mempoolTxs, p.Blockchain.Mempool)
+		p.Blockchain.Lock.RUnlock()
+
+		if len(mempoolTxs) > 100 {
+			mempoolTxs = mempoolTxs[:100]
+		}
+		respData, err := json.Marshal(Message{
+			NetworkID: p.GetNetworkID(),
+			Type:      "MEMPOOL_RESPONSE",
+			Payload:   mempoolTxs,
+		})
+		if err == nil {
+			_ = sess.conn.SetWriteDeadline(time.Now().Add(SocketTimeoutDuration))
+			_, _ = sess.conn.Write(append(respData, '\n'))
+		}
+
+	case "MEMPOOL_RESPONSE":
+		var txList []core.Transaction
+		if len(msg.Payload) > 0 && json.Unmarshal(msg.Payload, &txList) == nil {
+			// Bound max incoming txs per MEMPOOL_RESPONSE to 100 [T5]
+			if len(txList) > 100 {
+				txList = txList[:100]
+			}
+			for _, tx := range txList {
+				p.ProcessIncomingTx(tx, sess.remoteIP)
+			}
+		}
+
+	case "GET_PEERS":
+		allPeers := p.GetPeers()
+		peers := make([]string, 0, len(allPeers))
+		for _, candidate := range allPeers {
+			if p.isPeerUnreachable(candidate) || p.isSelfPeerAddress(candidate) {
+				continue
+			}
+			if sess.remoteIP != "" && sess.remoteIP != "127.0.0.1" && sess.remoteIP != "::1" && extractHost(candidate) == sess.remoteIP {
+				continue
+			}
+			if p.isPeerStale(candidate) {
+				continue
+			}
+			// Do not gossip unverified non-seed peers: only advertise peers that the local node
+			// has actually verified (handshaked) and are not stale [P2P gossip hardening].
+			if !p.isSeedPeer(candidate) && !p.isPeerVerified(candidate) {
+				continue
+			}
+			peers = append(peers, candidate)
+		}
+		if len(peers) > MaxPeersPerResponse {
+			peers = peers[:MaxPeersPerResponse]
+		}
+		respData, err := json.Marshal(Message{
+			NetworkID: p.GetNetworkID(),
+			Type:      "PEERS_LIST",
+			Payload:   peers,
+		})
+		if err == nil {
+			_ = sess.conn.SetWriteDeadline(time.Now().Add(SocketTimeoutDuration))
+			_, _ = sess.conn.Write(append(respData, '\n'))
+		}
+
+	case "PEERS_LIST":
+		if sess.p2pTOFU && sess.pendingFingerprint == "" {
+			return true
+		}
+		var peerList []string
+		if json.Unmarshal(msg.Payload, &peerList) == nil {
+			p.ingestPeerAddresses(peerList, sess.remoteIP, sess.quitCh)
+		}
+
+	case "DHT_PING":
+		respData, err := json.Marshal(Message{
+			NetworkID: p.GetNetworkID(),
+			Type:      "DHT_PONG",
+			Payload:   p.DHT.FindClosestNodes(p.DHT.LocalNode.ID, 8),
+		})
+		if err == nil {
+			_ = sess.conn.SetWriteDeadline(time.Now().Add(SocketTimeoutDuration))
+			_, _ = sess.conn.Write(append(respData, '\n'))
+		}
+
+	case "DHT_FIND_NODE":
+		var targetHex string
+		_ = json.Unmarshal(msg.Payload, &targetHex)
+		var targetID [32]byte
+		if tBytes, err := hex.DecodeString(targetHex); err == nil && len(tBytes) == 32 {
+			copy(targetID[:], tBytes)
+		} else {
+			targetID = p.DHT.LocalNode.ID
+		}
+		closest := p.DHT.FindClosestNodes(targetID, KademliaK)
+		respData, err := json.Marshal(Message{
+			NetworkID: p.GetNetworkID(),
+			Type:      "DHT_NODES",
+			Payload:   closest,
+		})
+		if err == nil {
+			_ = sess.conn.SetWriteDeadline(time.Now().Add(SocketTimeoutDuration))
+			_, _ = sess.conn.Write(append(respData, '\n'))
+		}
+
+	case "DHT_NODES":
+		if sess.p2pTOFU && sess.pendingFingerprint == "" {
+			return true
+		}
+		var discovered []DHTNodeInfo
+		if err := json.Unmarshal(msg.Payload, &discovered); err == nil {
+			p.ingestDHTNodes(discovered, sess.quitCh)
+		}
+	}
+
+	return true
 }
 
 // ResolveDNSSeed resolves a domain-based or IP-based seed address (host:port) with timeout [N-11]
@@ -4395,6 +5261,9 @@ func (p *PeerServer) AddPeer(peerAddress string) error {
 				delete(p.newPeers, existing)
 				p.newPeers[peerAddress] = info
 				info.Address = peerAddress
+				if info.SeedHost == "" {
+					info.SeedHost = normalizePeerEndpoint(existing)
+				}
 				p.rebuildPeersListLocked()
 			}
 			p.Lock.Unlock()
@@ -4456,6 +5325,21 @@ func (p *PeerServer) AddPeer(peerAddress string) error {
 func (p *PeerServer) GetPeers() []string {
 	p.Lock.RLock()
 	defer p.Lock.RUnlock()
+	peersCopy := make([]string, len(p.Peers))
+	copy(peersCopy, p.Peers)
+	return peersCopy
+}
+
+// GetDialablePeers returns canonical normalized endpoints (ip:port) suitable for outbound dialing
+// and TOFU pinning, falling back to p.Peers when direct unit tests populate Peers manually.
+func (p *PeerServer) GetDialablePeers() []string {
+	p.Lock.RLock()
+	defer p.Lock.RUnlock()
+	if len(p.dialablePeers) > 0 {
+		out := make([]string, len(p.dialablePeers))
+		copy(out, p.dialablePeers)
+		return out
+	}
 	peersCopy := make([]string, len(p.Peers))
 	copy(peersCopy, p.Peers)
 	return peersCopy
@@ -4682,6 +5566,122 @@ func (p *PeerServer) TrackActiveConn() func() {
 	}
 }
 
+func (p *PeerServer) effectiveSlotLimits() (totalMax, maxIn, maxOut int) {
+	p.Lock.RLock()
+	totalMax = p.MaxPeers
+	cfgIn := p.MaxInboundPeers
+	cfgOut := p.MaxOutboundPeers
+	p.Lock.RUnlock()
+
+	if totalMax <= 0 {
+		totalMax = MaxPeersDefault
+	}
+	if cfgIn > 0 || cfgOut > 0 {
+		if cfgIn > 0 && cfgOut > 0 {
+			if cfgIn+cfgOut <= totalMax {
+				return totalMax, cfgIn, cfgOut
+			}
+			clampedOut := (totalMax * cfgOut) / (cfgIn + cfgOut)
+			if clampedOut < 1 && totalMax >= 2 {
+				clampedOut = 1
+			}
+			if clampedOut > totalMax {
+				clampedOut = totalMax
+			}
+			return totalMax, totalMax - clampedOut, clampedOut
+		}
+		if cfgIn > 0 {
+			if cfgIn > totalMax {
+				cfgIn = totalMax
+			}
+			return totalMax, cfgIn, totalMax - cfgIn
+		}
+		if cfgOut > totalMax {
+			cfgOut = totalMax
+		}
+		return totalMax, totalMax - cfgOut, cfgOut
+	}
+
+	if totalMax == MaxPeersDefault {
+		return totalMax, MaxInboundPeersDefault, MaxOutboundPeersDefault
+	}
+	if totalMax == 1 {
+		return 1, 1, 1
+	}
+	maxOut = (totalMax * MaxOutboundPeersDefault) / MaxPeersDefault
+	if maxOut < 1 {
+		maxOut = 1
+	}
+	if maxOut >= totalMax {
+		maxOut = totalMax - 1
+	}
+	return totalMax, totalMax - maxOut, maxOut
+}
+
+func (p *PeerServer) tryReserveInboundSlot(remoteSubnet string, disableSubnetLimit bool) (func(), string, bool) {
+	totalMax, maxIn, _ := p.effectiveSlotLimits()
+
+	p.connLock.Lock()
+	in := int(atomic.LoadInt32(&p.activeInbound))
+	out := int(atomic.LoadInt32(&p.activeOutbound))
+	if in >= maxIn || (in+out) >= totalMax {
+		p.connLock.Unlock()
+		return nil, "ERROR: Connection limit exceeded\n", false
+	}
+	if p.subnetConns == nil {
+		p.subnetConns = make(map[string]int)
+	}
+	if !disableSubnetLimit && remoteSubnet != "127.0.0.1" && p.subnetConns[remoteSubnet] >= MaxPeersPerSubnet {
+		p.connLock.Unlock()
+		return nil, "ERROR: Subnet connection limit reached\n", false
+	}
+	p.subnetConns[remoteSubnet]++
+	atomic.AddInt32(&p.activeInbound, 1)
+	atomic.AddInt32(&p.ActiveConns, 1)
+	p.connLock.Unlock()
+
+	var releaseOnce sync.Once
+	return func() {
+		releaseOnce.Do(func() {
+			p.connLock.Lock()
+			if p.subnetConns != nil {
+				p.subnetConns[remoteSubnet]--
+				if p.subnetConns[remoteSubnet] <= 0 {
+					delete(p.subnetConns, remoteSubnet)
+				}
+			}
+			atomic.AddInt32(&p.activeInbound, -1)
+			atomic.AddInt32(&p.ActiveConns, -1)
+			p.connLock.Unlock()
+		})
+	}, "", true
+}
+
+func (p *PeerServer) tryReserveOutboundSlot() (func(), bool) {
+	totalMax, _, maxOut := p.effectiveSlotLimits()
+
+	p.connLock.Lock()
+	in := int(atomic.LoadInt32(&p.activeInbound))
+	out := int(atomic.LoadInt32(&p.activeOutbound))
+	if out >= maxOut || (in+out) >= totalMax {
+		p.connLock.Unlock()
+		return nil, false
+	}
+	atomic.AddInt32(&p.activeOutbound, 1)
+	atomic.AddInt32(&p.ActiveConns, 1)
+	p.connLock.Unlock()
+
+	var releaseOnce sync.Once
+	return func() {
+		releaseOnce.Do(func() {
+			p.connLock.Lock()
+			atomic.AddInt32(&p.activeOutbound, -1)
+			atomic.AddInt32(&p.ActiveConns, -1)
+			p.connLock.Unlock()
+		})
+	}, true
+}
+
 // FingerprintProvider allows connection wrappers or test mocks to expose TLS pubkey fingerprints
 type FingerprintProvider interface {
 	GetCertFingerprint() string
@@ -4728,40 +5728,30 @@ func (p *PeerServer) verifyOrRecordInboundIdentity(fingerprint string) error {
 	if fingerprint == "" {
 		return errors.New("inbound TLS connection has no client certificate fingerprint")
 	}
+
+	p.Lock.RLock()
+	corrupted := p.peerStoreCorrupted
+	p.Lock.RUnlock()
+	if corrupted {
+		return errors.New("peer store is corrupt; refusing to trust inbound identity")
+	}
+
 	p.inboundIdentityMu.Lock()
 	defer p.inboundIdentityMu.Unlock()
 
-	p.Lock.RLock()
-	_, trusted := p.inboundFingerprints[fingerprint]
-	p.Lock.RUnlock()
-	if trusted {
-		return nil
-	}
-
-	p.savePeersLock.Lock()
-	defer p.savePeersLock.Unlock()
-
-	p.Lock.Lock()
-	if p.peerStoreCorrupted {
-		p.Lock.Unlock()
-		return errors.New("peer store is corrupt; refusing to trust inbound identity")
-	}
 	if p.inboundFingerprints == nil {
 		p.inboundFingerprints = make(map[string]struct{})
 	}
 	if _, trusted := p.inboundFingerprints[fingerprint]; trusted {
-		p.Lock.Unlock()
 		return nil
 	}
-	p.inboundFingerprints[fingerprint] = struct{}{}
-	p.Lock.Unlock()
-
-	if err := p.savePeersLocked(); err != nil {
-		p.Lock.Lock()
-		delete(p.inboundFingerprints, fingerprint)
-		p.Lock.Unlock()
-		return fmt.Errorf("failed to persist inbound peer identity: %w", err)
+	for len(p.inboundFingerprints) >= MaxInboundFingerprints && len(p.inboundFingerprintOrder) > 0 {
+		oldest := p.inboundFingerprintOrder[0]
+		p.inboundFingerprintOrder = p.inboundFingerprintOrder[1:]
+		delete(p.inboundFingerprints, oldest)
 	}
+	p.inboundFingerprints[fingerprint] = struct{}{}
+	p.inboundFingerprintOrder = append(p.inboundFingerprintOrder, fingerprint)
 	return nil
 }
 
@@ -4906,11 +5896,26 @@ func (p *PeerServer) verifyOrRecordTOFULocked(peerAddr string, conn net.Conn) er
 		}
 	}
 
+	existingSeedHost := ""
+	if oldTriedCopy != nil {
+		existingSeedHost = oldTriedCopy.SeedHost
+	}
+	if existingSeedHost == "" && oldNewCopy != nil {
+		existingSeedHost = oldNewCopy.SeedHost
+	}
+	if existingSeedHost == "" {
+		normTarget := normalizePeerEndpoint(peerAddr)
+		if h, _, err := net.SplitHostPort(normTarget); err == nil && net.ParseIP(h) == nil {
+			existingSeedHost = normTarget
+		}
+	}
+
 	if p.triedPeers == nil {
 		p.triedPeers = make(map[string]*PeerInfo)
 	}
 	p.triedPeers[peerAddr] = &PeerInfo{
 		Address:         peerAddr,
+		SeedHost:        existingSeedHost,
 		LastSeen:        time.Now(),
 		NetworkID:       p.getNetworkIDLocked(),
 		CertFingerprint: fp,
@@ -4959,7 +5964,7 @@ func (p *PeerServer) IsPeerStoreCorrupted() bool {
 	return p.peerStoreCorrupted
 }
 
-// DialPeer establishes an outbound connection to a peer address and tracks it in ActiveConns [L4-8, Phase 5, P1 Final Fix].
+// DialPeer establishes an outbound connection to a peer address and reserves an outbound slot in ActiveConns [L4-8, Phase 5, P1 Final Fix].
 // It holds lifecycleLock in read mode across the entire outbound transaction (configuration snapshot ->
 // TLS handshake -> TOFU verification -> durable persistence) to ensure network identity and peer store
 // remain consistent throughout the handshake and verification, and cannot be mutated by concurrent setters.
@@ -4987,6 +5992,22 @@ func (p *PeerServer) DialPeer(peerAddress string, timeout time.Duration) (net.Co
 	p2pTOFU := p.P2PTOFU
 	p.Lock.RUnlock()
 
+	releaseSlot, ok := p.tryReserveOutboundSlot()
+	if !ok {
+		for attempt := 0; attempt < 2; attempt++ {
+			if !p.evictIdleOutboundSession(peerAddress) {
+				break
+			}
+			releaseSlot, ok = p.tryReserveOutboundSlot()
+			if ok {
+				break
+			}
+		}
+		if !ok {
+			return nil, nil, errOutboundLimitExceeded
+		}
+	}
+
 	allowPlaintext := !requireTLS && !p2pTOFU && !IsStrictTLS()
 	var clientIdentity *tls.Certificate
 	if p.tlsConfig != nil && len(p.tlsConfig.Certificates) > 0 {
@@ -4994,11 +6015,13 @@ func (p *PeerServer) DialPeer(peerAddress string, timeout time.Duration) (net.Co
 	}
 	conn, isTLS, err := dialEncryptedWithFallbackForNetwork(p.GetNetworkID(), peerAddress, timeout, allowPlaintext, clientIdentity)
 	if err != nil {
+		releaseSlot()
 		return nil, nil, err
 	}
 	if requireTLS || p2pTOFU {
 		if !isTLS {
 			_ = conn.Close()
+			releaseSlot()
 			return nil, nil, fmt.Errorf("P2P TOFU fail-closed: unencrypted plaintext connection to %s rejected when TOFU or TLS is active", peerAddress)
 		}
 	}
@@ -5012,16 +6035,12 @@ func (p *PeerServer) DialPeer(peerAddress string, timeout time.Duration) (net.Co
 		// This avoids nested/recursive RLock calls that could deadlock when a writer is waiting.
 		if err := p.verifyOrRecordTOFULocked(peerAddress, conn); err != nil {
 			_ = conn.Close()
+			releaseSlot()
 			return nil, nil, err
 		}
 	}
-	release := p.TrackActiveConn()
-	var releaseOnce sync.Once
-	safeRelease := func() {
-		releaseOnce.Do(release)
-	}
 
-	return conn, safeRelease, nil
+	return conn, releaseSlot, nil
 }
 
 func expectedResponseType(reqType string) string {
@@ -5032,6 +6051,8 @@ func expectedResponseType(reqType string) string {
 		return "BLOCK_RANGE_RESPONSE"
 	case "GET_FORKPOINT":
 		return "FORKPOINT_RESPONSE"
+	case "GET_MEMPOOL":
+		return "MEMPOOL_RESPONSE"
 	case "GET_PEERS":
 		return "PEERS_LIST"
 	case "DHT_PING":
@@ -5045,11 +6066,22 @@ func expectedResponseType(reqType string) string {
 
 func isStandardRPCResponseType(respType string) bool {
 	switch respType {
-	case "HEIGHT_RESPONSE", "BLOCK_RANGE_RESPONSE", "FORKPOINT_RESPONSE", "PEERS_LIST", "DHT_PONG", "DHT_NODES":
+	case "HEIGHT_RESPONSE", "BLOCK_RANGE_RESPONSE", "FORKPOINT_RESPONSE", "MEMPOOL_RESPONSE", "PEERS_LIST", "DHT_PONG", "DHT_NODES":
 		return true
 	default:
 		return false
 	}
+}
+
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
 }
 
 // QueryPeer sends a P2P request over a persistent session, validates the response network, and waits for the response.
@@ -5069,7 +6101,7 @@ func (p *PeerServer) QueryPeer(
 		return nil, err
 	}
 
-	session, err := p.getOrCreateOutboundSession(peerAddress, timeout)
+	session, reused, err := p.getOrCreateOutboundSessionWithStatus(peerAddress, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -5078,7 +6110,17 @@ func (p *PeerServer) QueryPeer(
 	if errors.Is(err, errSessionClosed) {
 		// Session was closed by a prior concurrent caller before our request was ever written.
 		p.dropOutboundSession(peerAddress, session)
-		session, err = p.getOrCreateOutboundSession(peerAddress, timeout)
+		session, reused, err = p.getOrCreateOutboundSessionWithStatus(peerAddress, timeout)
+		if err != nil {
+			return nil, err
+		}
+		line, err = session.roundTrip(msgData, timeout)
+	}
+	if err != nil && reused && !p.isShuttingDown() && !isTimeoutError(err) && expectedResponseType(msg.Type) != "" {
+		// A reused persistent socket may have closed remotely (idle timeout, NAT expiry, restart);
+		// reopen one fresh TOFU-verified session transparently for idempotent read RPCs.
+		p.dropOutboundSession(peerAddress, session)
+		session, _, err = p.getOrCreateOutboundSessionWithStatus(peerAddress, timeout)
 		if err != nil {
 			return nil, err
 		}
@@ -5093,13 +6135,20 @@ func (p *PeerServer) QueryPeer(
 		)
 		p.dropOutboundSession(peerAddress, session)
 
-		if p.isShuttingDown() {
+		// Skip TOFU re-dial probe on shutdown or timeout errors to avoid doubling wait on dead peers.
+		// Next request opens a fresh TOFU-verified DialPeer session automatically; unexpected EOF/resets still probe.
+		if p.isShuttingDown() || isTimeoutError(err) {
 			return nil, err
+		}
+
+		probeTimeout := timeout
+		if probeTimeout <= 0 || probeTimeout > 2*time.Second {
+			probeTimeout = 2 * time.Second
 		}
 
 		// Reconnect only to verify TLS and the stored TOFU fingerprint.
 		// Do not resend the original message because the peer may have processed it.
-		probeConn, probeRelease, probeErr := p.DialPeer(peerAddress, timeout)
+		probeConn, probeRelease, probeErr := p.DialPeer(peerAddress, probeTimeout)
 		if probeErr != nil {
 			return nil, probeErr
 		}
@@ -5188,6 +6237,10 @@ func (p *PeerServer) QueryPeer(
 		session.handshakeValidated.Store(true)
 	}
 
+	if msg.Type != "DHT_PING" {
+		session.touchApp()
+	}
+
 	return &resp, nil
 }
 
@@ -5233,8 +6286,11 @@ func (p *PeerServer) SendMessage(
 			p.dropOutboundSession(peerAddress, freshSession)
 			return sendErr
 		}
+		freshSession.touchApp()
+		return nil
 	}
 
+	session.touchApp()
 	return nil
 }
 
@@ -5302,6 +6358,106 @@ func (p *PeerServer) startPeerSessionHeartbeat(cycle *serverCycle) {
 			}
 		}
 	}
+}
+
+// startRuntimeMapGCWorker periodically sweeps expired and excess entries across runtime maps.
+func (p *PeerServer) startRuntimeMapGCWorker(cycle *serverCycle) {
+	defer cycle.wg.Done()
+
+	ticker := time.NewTicker(runtimeMapGCInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-cycle.quitChan:
+			return
+		case <-ticker.C:
+			p.pruneStaleRuntimeMaps()
+		}
+	}
+}
+
+// pruneStaleRuntimeMaps reclaims expired entries and enforces hard caps across runtime maps.
+// It acquires strictly one leaf lock at a time to eliminate cross-lock deadlock hazards.
+func (p *PeerServer) pruneStaleRuntimeMaps() {
+	if p == nil {
+		return
+	}
+	now := time.Now()
+
+	// 1. Ban & rate-limiting state (banLock)
+	p.banLock.Lock()
+	for ip, exp := range p.bannedIPs {
+		if !now.Before(exp) {
+			delete(p.bannedIPs, ip)
+		}
+	}
+	cutoff := now.Add(-skewStrikeWindow)
+	for ip, strikes := range p.skewStrikes {
+		active := strikes[:0]
+		for _, ts := range strikes {
+			if ts.After(cutoff) {
+				active = append(active, ts)
+			}
+		}
+		if len(active) == 0 {
+			delete(p.skewStrikes, ip)
+		} else {
+			p.skewStrikes[ip] = active
+		}
+	}
+	p.pruneRateTrackersLocked(now, maxRateTrackers)
+	p.pruneBanScoresLocked(now)
+	p.banLock.Unlock()
+
+	// 2. Deduplication, negative block cache & sync cooldown state (seenLock)
+	p.seenLock.Lock()
+	for host, last := range p.syncCooldowns {
+		if now.Sub(last) >= syncCooldownTTL {
+			delete(p.syncCooldowns, host)
+		}
+	}
+	for h, ts := range p.seenTxs {
+		if now.Sub(ts) > seenTxTTL {
+			delete(p.seenTxs, h)
+		}
+	}
+	if len(p.seenTxs) > maxSeenTxs {
+		evictOldestTimeMapEntries(p.seenTxs, maxSeenTxs)
+	}
+	for h, ts := range p.seenBlks {
+		if now.Sub(ts) > seenBlkTTL {
+			delete(p.seenBlks, h)
+		}
+	}
+	if len(p.seenBlks) > maxSeenBlks {
+		evictOldestTimeMapEntries(p.seenBlks, maxSeenBlks)
+	}
+	for h, exp := range p.negativeBlks {
+		if now.After(exp) {
+			delete(p.negativeBlks, h)
+		}
+	}
+	p.seenLock.Unlock()
+
+	// 3. Peer reachability & self-announce cooldown state (reachabilityMu)
+	p.reachabilityMu.Lock()
+	for target, last := range p.announcedPeers {
+		if now.Sub(last) >= SelfAnnounceInterval {
+			delete(p.announcedPeers, target)
+		}
+	}
+	for key, exp := range p.unreachablePeers {
+		if now.After(exp) {
+			delete(p.unreachablePeers, key)
+		}
+	}
+	p.reachabilityMu.Unlock()
+
+	// 4. Transaction relay attempt claims (relayLock)
+	p.relayLock.Lock()
+	p.pruneRelayedTxsLocked(now, maxRelayedTxs)
+	p.relayLock.Unlock()
 }
 
 func (p *PeerServer) getExistingOutboundSession(
@@ -5415,7 +6571,7 @@ func (p *PeerServer) RelayBlock(block core.Block, senderAddr string) {
 		return
 	}
 	p.isBlockSeenOrMark(block.Hash)
-	peers := p.GetPeers()
+	peers := p.GetDialablePeers()
 	for _, peer := range peers {
 		if !isSamePeerOrHost(peer, senderAddr) {
 			done, admitted := p.registerOutboundWork()
@@ -5438,7 +6594,7 @@ func (p *PeerServer) SyncMempool() {
 	if p.Blockchain == nil || p.isShuttingDown() {
 		return
 	}
-	peers := p.GetPeers()
+	peers := p.GetDialablePeers()
 	if len(peers) == 0 {
 		return
 	}
@@ -5460,28 +6616,81 @@ func (p *PeerServer) SyncMempool() {
 	}
 }
 
-// RebroadcastMempool periodically redistributes unmined local mempool transactions to all peers
+// RebroadcastMempool periodically redistributes unmined local mempool transactions to peers
+// using per-(tx, peer) deduplication and bounded worker concurrency.
 func (p *PeerServer) RebroadcastMempool() {
 	if p.Blockchain == nil || p.isShuttingDown() {
 		return
 	}
 	p.Blockchain.Lock.RLock()
-	if len(p.Blockchain.Mempool) == 0 {
+	mpLen := len(p.Blockchain.Mempool)
+	if mpLen == 0 {
 		p.Blockchain.Lock.RUnlock()
 		return
 	}
-	mempoolCopy := make([]core.Transaction, len(p.Blockchain.Mempool))
-	copy(mempoolCopy, p.Blockchain.Mempool)
+	if mpLen > maxRebroadcastTxsPerCycle {
+		mpLen = maxRebroadcastTxsPerCycle
+	}
+	mempoolCopy := make([]core.Transaction, mpLen)
+	copy(mempoolCopy, p.Blockchain.Mempool[:mpLen])
 	p.Blockchain.Lock.RUnlock()
 
-	peers := p.GetPeers()
+	peers := p.GetDialablePeers()
 	if len(peers) == 0 {
 		return
 	}
 
+	netID := p.GetNetworkID()
+	quitCh := p.activeCycleQuitChan()
+	sem := make(chan struct{}, maxConcurrentRebroadcasts)
+	var wg sync.WaitGroup
+
 	for _, tx := range mempoolCopy {
-		p.BroadcastTransaction(peers, tx)
+		if p.isShuttingDown() {
+			break
+		}
+		txHash := tx.HashHex()
+		for _, peer := range peers {
+			if p.isShuttingDown() {
+				break
+			}
+			claimTime, claimed := p.claimTxRelay(txHash, peer)
+			if !claimed {
+				continue
+			}
+			done, admitted := p.registerOutboundWork()
+			if !admitted {
+				p.releaseTxRelay(txHash, peer, claimTime)
+				wg.Wait()
+				return
+			}
+			select {
+			case sem <- struct{}{}:
+			case <-quitCh:
+				p.releaseTxRelay(txHash, peer, claimTime)
+				done()
+				wg.Wait()
+				return
+			}
+
+			wg.Add(1)
+			go func(target string, transaction core.Transaction, h string, cTime time.Time, doneFunc func()) {
+				defer func() {
+					<-sem
+					doneFunc()
+					wg.Done()
+				}()
+				if p.isShuttingDown() {
+					p.releaseTxRelay(h, target, cTime)
+					return
+				}
+				if err := p.SendMessage(target, Message{NetworkID: netID, Type: "NEW_TX", Payload: transaction}); err != nil {
+					p.releaseTxRelay(h, target, cTime)
+				}
+			}(peer, tx, txHash, claimTime, done)
+		}
 	}
+	wg.Wait()
 }
 
 // RelayTransaction relays a transaction asynchronously to eligible peers [v1.0.6].
@@ -5494,7 +6703,7 @@ func (p *PeerServer) RelayTransaction(
 	}
 	txHash := tx.HashHex()
 
-	for _, peer := range p.GetPeers() {
+	for _, peer := range p.GetDialablePeers() {
 		if p.isShuttingDown() {
 			return
 		}
@@ -5696,7 +6905,7 @@ func (p *PeerServer) SyncBestPeer() {
 	if p.Blockchain == nil || p.isShuttingDown() {
 		return
 	}
-	peers := p.GetPeers()
+	peers := p.GetDialablePeers()
 	if len(peers) == 0 {
 		return
 	}
@@ -5741,7 +6950,7 @@ func (p *PeerServer) SyncBestPeer() {
 			}
 			resp, err := p.QueryPeer(peerAddr, Message{NetworkID: p.GetNetworkID(), Type: "GET_HEIGHT"}, 3*time.Second)
 			if err != nil {
-				if p.isShuttingDown() {
+				if p.isShuttingDown() || errors.Is(err, errOutboundLimitExceeded) {
 					return
 				}
 				debugLogf("[SYNC] GET_HEIGHT failed peer=%s err=%v", peerAddr, err)
@@ -5986,12 +7195,13 @@ func (p *PeerServer) RequestChainSync(peerAddress string) {
 
 		for currentAncestor < hr.Height {
 			var batchBlocks []core.Block
-			const MaxSyncBlocksPerRequest = 4 * SyncChunkSize // 1000 blocks per DB commit batch
+			batchBytes := 0
+			const MaxSyncBlocksPerRequest = 4 * SyncChunkSize // 1000 blocks or MaxSyncBatchBytes per DB commit batch
 			fetchFailed := false
 
 			for from := currentAncestor + 1; from <= hr.Height; {
-				// Safeguard: apply in bounded batches to commit progress safely to database
-				if len(batchBlocks) >= MaxSyncBlocksPerRequest {
+				// Safeguard: bound batch by block count and canonical byte budget (MaxSyncBatchBytes = 8 MiB).
+				if len(batchBlocks) >= MaxSyncBlocksPerRequest || (len(batchBlocks) > 0 && batchBytes >= MaxSyncBatchBytes) {
 					break
 				}
 
@@ -6020,7 +7230,7 @@ func (p *PeerServer) RequestChainSync(peerAddress string) {
 					// Multi-peer failover: attempt alternative peers if primary fails
 					failedPeer := syncPeer
 					recovered := false
-					for _, altPeer := range p.GetPeers() {
+					for _, altPeer := range p.GetDialablePeers() {
 						if altPeer == failedPeer || altPeer == "" {
 							continue
 						}
@@ -6118,6 +7328,9 @@ func (p *PeerServer) RequestChainSync(peerAddress string) {
 				}
 
 				batchBlocks = append(batchBlocks, br.Blocks...)
+				for i := range br.Blocks {
+					batchBytes += br.Blocks[i].Size()
+				}
 				from += len(br.Blocks)
 				time.Sleep(10 * time.Millisecond) // Fast pipeline pacing
 			}
@@ -6190,12 +7403,22 @@ func (p *PeerServer) RequestChainSync(peerAddress string) {
 			if err != nil {
 				return
 			}
+			quitCh, unregisterStream, ok := p.registerStreamConn(conn)
+			if !ok {
+				_ = conn.Close()
+				release()
+				return
+			}
 			defer func() {
+				unregisterStream()
 				_ = conn.Close()
 				release()
 			}()
 
 			for from := hr.Height + 1; from > 0 && from <= localLatest.Index; from += SyncChunkSize {
+				if p.isShuttingDown() {
+					return
+				}
 				remaining := localLatest.Index - from
 				chunkMax := SyncChunkSize
 				if remaining < SyncChunkSize-1 {
@@ -6221,6 +7444,9 @@ func (p *PeerServer) RequestChainSync(peerAddress string) {
 				p.Blockchain.Lock.RUnlock()
 
 				for _, blk := range chunk {
+					if p.isShuttingDown() {
+						return
+					}
 					msgBytes, err := json.Marshal(Message{
 						NetworkID: p.GetNetworkID(),
 						Type:      "NEW_BLOCK",
@@ -6232,7 +7458,18 @@ func (p *PeerServer) RequestChainSync(peerAddress string) {
 							return
 						}
 					}
-					time.Sleep(20 * time.Millisecond) // Pacing 50 msgs/s, well within NEW_BLOCK budget of 80/s [T1]
+					// Pacing 50 msgs/s, well within NEW_BLOCK budget of 80/s [T1]
+					if quitCh != nil {
+						timer := time.NewTimer(20 * time.Millisecond)
+						select {
+						case <-timer.C:
+						case <-quitCh:
+							timer.Stop()
+							return
+						}
+					} else {
+						time.Sleep(20 * time.Millisecond)
+					}
 				}
 			}
 		}

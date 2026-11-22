@@ -31,14 +31,14 @@ func TestN13_BoundedMessageReaderDropsOversizedStream(t *testing.T) {
 	}
 	defer conn.Close()
 
-	// Send a 5 MB stream with no newlines (exceeding the 4 MB hard limit)
+	// Send a 9 MB stream with no newlines (exceeding the 8 MiB hard limit)
 	chunk := bytes.Repeat([]byte("A"), 64*1024)
 
 	totalSent := 0
 	droppedEarly := false
 
-	// Attempt to stream 5 MB (80 * 64 KB = 5 MB > 4 MB)
-	for i := 0; i < 80; i++ {
+	// Attempt to stream 9 MB (144 * 64 KB = 9 MB > 8 MiB)
+	for i := 0; i < 144; i++ {
 		_ = conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
 		n, err := conn.Write(chunk)
 		if err != nil {
