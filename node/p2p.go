@@ -1534,14 +1534,6 @@ func (p *PeerServer) getOrCreateOutboundSessionWithStatus(
 	return session, false, nil
 }
 
-func (p *PeerServer) getOrCreateOutboundSession(
-	peerAddress string,
-	timeout time.Duration,
-) (*outboundPeerSession, error) {
-	session, _, err := p.getOrCreateOutboundSessionWithStatus(peerAddress, timeout)
-	return session, err
-}
-
 func (p *PeerServer) dropOutboundSession(
 	peerAddress string,
 	session *outboundPeerSession,
@@ -4788,19 +4780,13 @@ func (p *PeerServer) processInboundFrame(sess *inboundConnSession, rawLine []byt
 	var msg rawInboundMessage
 	if err := json.Unmarshal(trimmed, &msg); err != nil {
 		p.AddBanScore(sess.remoteIP, 10)
-		if p.IsBanned(sess.remoteIP) {
-			return false
-		}
-		return true
+		return !p.IsBanned(sess.remoteIP)
 	}
 
 	// Network protocol magic validation (drop cross-chain / alien packets) [C-33]
 	if msg.NetworkID != p.GetNetworkID() {
 		p.AddBanScore(sess.remoteIP, 10)
-		if p.IsBanned(sess.remoteIP) {
-			return false
-		}
-		return true
+		return !p.IsBanned(sess.remoteIP)
 	}
 
 	// Rate limiting and abusive behavior ban score [N-15, T1]; immediately disconnect if already or newly banned.
@@ -4808,10 +4794,7 @@ func (p *PeerServer) processInboundFrame(sess *inboundConnSession, rawLine []byt
 		return false
 	}
 	if !p.AllowMessage(sess.remoteIP, msg.Type) {
-		if p.IsBanned(sess.remoteIP) {
-			return false
-		}
-		return true
+		return !p.IsBanned(sess.remoteIP)
 	}
 
 	// Per-connection GET_MEMPOOL rate limit (burst 3, refill 1/20s) paired with per-IP NAT aggregate bucket.
@@ -4888,10 +4871,7 @@ func (p *PeerServer) processInboundFrame(sess *inboundConnSession, rawLine []byt
 			if expandErr != nil {
 				core.LogWarn(core.LogCategoryNet, "Bad compressed PUSH_BLOCKS from peer %s: %v", sess.remoteIP, expandErr)
 				p.AddBanScore(sess.remoteIP, 10)
-				if p.IsBanned(sess.remoteIP) {
-					return false
-				}
-				return true
+				return !p.IsBanned(sess.remoteIP)
 			}
 		}
 		p.handlePushedBlocks(pr.Blocks, sess.remoteIP, sess.remoteAddr)
