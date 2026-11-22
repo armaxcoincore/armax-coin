@@ -9,10 +9,13 @@ import (
 	"github.com/armaxcoincore/armax-coin/core"
 )
 
-// TestP2_4_NodeInvariants verifies P2P packet size and GET_BLOCK_RANGE invariants [P2-4]
+// TestP2_4_NodeInvariants verifies P2P 8 MiB packet cap and GET_BLOCK_RANGE invariants [P2-4]
 func TestP2_4_NodeInvariants(t *testing.T) {
-	if MaxIncomingPacketSize != 4*1024*1024 {
-		t.Fatalf("Expected MaxIncomingPacketSize = 4 MB (4194304 B), got %d", MaxIncomingPacketSize)
+	if MaxIncomingPacketSize != 8*1024*1024 {
+		t.Fatalf("Expected MaxIncomingPacketSize = 8 MB (8388608 B), got %d", MaxIncomingPacketSize)
+	}
+	if MaxIncomingPacketSize > MaxSessionRespBytes {
+		t.Fatalf("MaxIncomingPacketSize (%d) must be <= MaxSessionRespBytes (%d)", MaxIncomingPacketSize, MaxSessionRespBytes)
 	}
 
 	if MaxBlockRangeResponseBytes < core.MaxBlockSize {

@@ -90,13 +90,13 @@ func TestPushBlocks_MultiChunkStagingReorg(t *testing.T) {
 		t.Fatalf("expected local tip to remain at #4 after incomplete chunk1, got #%d", tip)
 	}
 
-	pushSessionsMu.Lock()
-	sess, ok := pushSessions[remoteAddr]
+	ps.pushSessionsMu.Lock()
+	sess, ok := ps.pushSessions[remoteAddr]
 	stagedLen := 0
 	if ok && sess != nil {
 		stagedLen = len(sess.blocks)
 	}
-	pushSessionsMu.Unlock()
+	ps.pushSessionsMu.Unlock()
 
 	if stagedLen != 2 {
 		t.Fatalf("expected 2 blocks staged in pushSessions for %s, got %d", remoteAddr, stagedLen)
@@ -111,23 +111,26 @@ func TestPushBlocks_MultiChunkStagingReorg(t *testing.T) {
 	}
 
 	// Verify push session was cleared
-	pushSessionsMu.Lock()
-	_, stillExists := pushSessions[remoteAddr]
-	pushSessionsMu.Unlock()
+	ps.pushSessionsMu.Lock()
+	_, stillExists := ps.pushSessions[remoteAddr]
+	ps.pushSessionsMu.Unlock()
 	if stillExists {
 		t.Fatalf("expected pushSession to be cleaned up after successful reorganization")
 	}
 
 	// Ensure timeout expiration works
-	pushSessionsMu.Lock()
-	pushSessions["expired_peer:1234"] = &pushBufferSession{
+	ps.pushSessionsMu.Lock()
+	if ps.pushSessions == nil {
+		ps.pushSessions = make(map[string]*pushBufferSession)
+	}
+	ps.pushSessions["expired_peer:1234"] = &pushBufferSession{
 		ancestor: 0,
 		blocks:   chunk1,
 		lastSeen: time.Now().Add(-35 * time.Second),
 	}
-	cleanupExpiredPushSessionsLocked()
-	_, expiredFound := pushSessions["expired_peer:1234"]
-	pushSessionsMu.Unlock()
+	ps.cleanupExpiredPushSessionsLocked()
+	_, expiredFound := ps.pushSessions["expired_peer:1234"]
+	ps.pushSessionsMu.Unlock()
 	if expiredFound {
 		t.Fatalf("expected expired pushSession to be cleaned up")
 	}

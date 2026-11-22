@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"flag"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/armaxcoincore/armax-coin/core"
@@ -18,6 +17,12 @@ const (
 
 	// MaxPushBlocks bounds the blocks sent to one peer per push round.
 	MaxPushBlocks = 1000
+
+	// maxPushSessions bounds concurrent staged fork-push sessions across remote peers.
+	maxPushSessions = 64
+
+	// MaxPushSessionBytes bounds cumulative canonical block bytes buffered per fork-push session.
+	MaxPushSessionBytes = 32 * 1024 * 1024
 
 	pushCooldown = 30 * time.Second
 )
@@ -49,21 +54,20 @@ func headerPoWHash(b core.Block) (string, bool) {
 }
 
 type pushBufferSession struct {
-	ancestor int
-	blocks   []core.Block
-	lastSeen time.Time
+	ancestor   int
+	blocks     []core.Block
+	totalBytes int
+	lastSeen   time.Time
 }
 
-var (
-	pushSessionsMu sync.Mutex
-	pushSessions   = make(map[string]*pushBufferSession)
-)
-
-func cleanupExpiredPushSessionsLocked() {
+func (p *PeerServer) cleanupExpiredPushSessionsLocked() {
+	if p.pushSessions == nil {
+		return
+	}
 	now := time.Now()
-	for addr, sess := range pushSessions {
+	for addr, sess := range p.pushSessions {
 		if now.Sub(sess.lastSeen) > 30*time.Second {
-			delete(pushSessions, addr)
+			delete(p.pushSessions, addr)
 		}
 	}
 }
@@ -80,6 +84,7 @@ func (p *PeerServer) handlePushedBlocks(blocks []core.Block, remoteIP, remoteAdd
 		p.AddBanScore(remoteIP, 20)
 		return
 	}
+	incomingBytes := 0
 	for i := range blocks {
 		if i > 0 && (blocks[i].Index != blocks[i-1].Index+1 || blocks[i].PrevHash != blocks[i-1].Hash) {
 			p.AddBanScore(remoteIP, 20)
@@ -89,42 +94,50 @@ func (p *PeerServer) handlePushedBlocks(blocks []core.Block, remoteIP, remoteAdd
 			p.AddBanScore(remoteIP, 20)
 			return
 		}
+		incomingBytes += blocks[i].Size()
+		if incomingBytes > MaxPushSessionBytes {
+			p.AddBanScore(remoteIP, 20)
+			return
+		}
 	}
 
 	p.pushMu.Lock()
 	defer p.pushMu.Unlock()
 
-	pushSessionsMu.Lock()
-	cleanupExpiredPushSessionsLocked()
-	session, hasSession := pushSessions[remoteAddr]
-	pushSessionsMu.Unlock()
+	var candidateBranch []core.Block
+	var effectiveAncestor int
+	var candidateBytes int
+
+	p.pushSessionsMu.Lock()
+	if p.pushSessions == nil {
+		p.pushSessions = make(map[string]*pushBufferSession)
+	}
+	p.cleanupExpiredPushSessionsLocked()
+	if session, hasSession := p.pushSessions[remoteAddr]; hasSession && len(session.blocks) > 0 {
+		lastSessionBlock := session.blocks[len(session.blocks)-1]
+		if blocks[0].Index == lastSessionBlock.Index+1 && blocks[0].PrevHash == lastSessionBlock.Hash {
+			// Contiguous continuation of an active session
+			if len(session.blocks)+len(blocks) > MaxPushBlocks || session.totalBytes+incomingBytes > MaxPushSessionBytes {
+				delete(p.pushSessions, remoteAddr)
+				p.pushSessionsMu.Unlock()
+				p.AddBanScore(remoteIP, 20)
+				return
+			}
+			session.blocks = append(session.blocks, blocks...)
+			session.totalBytes += incomingBytes
+			session.lastSeen = time.Now()
+			candidateBranch = append([]core.Block(nil), session.blocks...)
+			effectiveAncestor = session.ancestor
+			candidateBytes = session.totalBytes
+		}
+	}
+	p.pushSessionsMu.Unlock()
 
 	p.Blockchain.Lock.RLock()
 	chain := p.Blockchain.Chain
 	currentLen := len(chain)
 	localTipWork := core.CalculateChainwork(chain)
 	p.Blockchain.Lock.RUnlock()
-
-	var candidateBranch []core.Block
-	var effectiveAncestor int
-
-	if hasSession && len(session.blocks) > 0 {
-		lastSessionBlock := session.blocks[len(session.blocks)-1]
-		if blocks[0].Index == lastSessionBlock.Index+1 && blocks[0].PrevHash == lastSessionBlock.Hash {
-			// Contiguous continuation of an active session
-			session.blocks = append(session.blocks, blocks...)
-			session.lastSeen = time.Now()
-			if len(session.blocks) > MaxPushBlocks {
-				pushSessionsMu.Lock()
-				delete(pushSessions, remoteAddr)
-				pushSessionsMu.Unlock()
-				p.AddBanScore(remoteIP, 20)
-				return
-			}
-			candidateBranch = session.blocks
-			effectiveAncestor = session.ancestor
-		}
-	}
 
 	if candidateBranch == nil {
 		// New or standalone push: check if it connects to local chain
@@ -144,17 +157,27 @@ func (p *PeerServer) handlePushedBlocks(blocks []core.Block, remoteIP, remoteAdd
 		if ancestor < 0 || ancestor >= currentLen || chain[ancestor].Hash != blocks[0].PrevHash {
 			return
 		}
+		candidateBytes = 0
+		for i := range blocks {
+			candidateBytes += blocks[i].Size()
+			if candidateBytes > MaxPushSessionBytes {
+				p.AddBanScore(remoteIP, 20)
+				return
+			}
+		}
 		effectiveAncestor = ancestor
 		candidateBranch = blocks
 	}
 
 	// 1. If candidate branch directly extends the current active chain tip
 	if effectiveAncestor == currentLen-1 {
-		pushSessionsMu.Lock()
-		delete(pushSessions, remoteAddr)
-		pushSessionsMu.Unlock()
+		p.pushSessionsMu.Lock()
+		if p.pushSessions != nil {
+			delete(p.pushSessions, remoteAddr)
+		}
+		p.pushSessionsMu.Unlock()
 
-		for _, blk := range blocks {
+		for _, blk := range candidateBranch {
 			ok, addErr := p.Blockchain.ValidateAndAddBlockWithError(blk)
 			if !ok {
 				if core.IsFutureTimestampError(addErr) {
@@ -173,8 +196,8 @@ func (p *PeerServer) handlePushedBlocks(blocks []core.Block, remoteIP, remoteAdd
 			}
 			p.markBlockSeen(blk.Hash)
 		}
-		tip := blocks[len(blocks)-1]
-		core.LogInfo(core.LogCategorySync, "Applied %d pushed blocks from %s, new height #%d", len(blocks), remoteAddr, tip.Index)
+		tip := candidateBranch[len(candidateBranch)-1]
+		core.LogInfo(core.LogCategorySync, "Applied %d pushed blocks from %s, new height #%d", len(candidateBranch), remoteAddr, tip.Index)
 		go p.RelayBlock(tip, remoteAddr)
 		p.processOrphans(tip.Hash)
 		p.processOrphanTxs()
@@ -188,22 +211,42 @@ func (p *PeerServer) handlePushedBlocks(blocks []core.Block, remoteIP, remoteAdd
 
 	if candidateWork.Cmp(localTipWork) <= 0 {
 		// Heavier chain not yet reached; stage in session buffer awaiting subsequent chunks [HIGH-07]
-		pushSessionsMu.Lock()
-		pushSessions[remoteAddr] = &pushBufferSession{
-			ancestor: effectiveAncestor,
-			blocks:   candidateBranch,
-			lastSeen: time.Now(),
+		p.pushSessionsMu.Lock()
+		if p.pushSessions == nil {
+			p.pushSessions = make(map[string]*pushBufferSession)
 		}
-		pushSessionsMu.Unlock()
+		p.cleanupExpiredPushSessionsLocked()
+		if _, exists := p.pushSessions[remoteAddr]; !exists && len(p.pushSessions) >= maxPushSessions {
+			var oldestAddr string
+			var oldestTime time.Time
+			for addr, sess := range p.pushSessions {
+				if oldestAddr == "" || sess.lastSeen.Before(oldestTime) {
+					oldestAddr = addr
+					oldestTime = sess.lastSeen
+				}
+			}
+			if oldestAddr != "" {
+				delete(p.pushSessions, oldestAddr)
+			}
+		}
+		p.pushSessions[remoteAddr] = &pushBufferSession{
+			ancestor:   effectiveAncestor,
+			blocks:     append([]core.Block(nil), candidateBranch...),
+			totalBytes: candidateBytes,
+			lastSeen:   time.Now(),
+		}
+		p.pushSessionsMu.Unlock()
 		debugLogf("[P2P] PUSH_BLOCKS from %s staged (%d blocks, height #%d..#%d), awaiting remaining chunks",
 			remoteAddr, len(candidateBranch), candidateBranch[0].Index, candidateBranch[len(candidateBranch)-1].Index)
 		return
 	}
 
 	// Candidate branch has greater cumulative chainwork! Execute reorganization.
-	pushSessionsMu.Lock()
-	delete(pushSessions, remoteAddr)
-	pushSessionsMu.Unlock()
+	p.pushSessionsMu.Lock()
+	if p.pushSessions != nil {
+		delete(p.pushSessions, remoteAddr)
+	}
+	p.pushSessionsMu.Unlock()
 
 	if err := p.Blockchain.ResolveFork(effectiveAncestor, candidateBranch); err != nil {
 		if !strings.Contains(err.Error(), "chainwork") {
@@ -304,13 +347,23 @@ func (p *PeerServer) pushChainToPeer(peerAddress string, peerHeight int) {
 	if err != nil {
 		return
 	}
+	quitCh, unregisterStream, ok := p.registerStreamConn(conn)
+	if !ok {
+		_ = conn.Close()
+		release()
+		return
+	}
 	defer func() {
+		unregisterStream()
 		_ = conn.Close()
 		release()
 	}()
 
 	core.LogInfo(core.LogCategorySync, "Pushing %d blocks (#%d..#%d) to peer %s", len(pending), pending[0].Index, end, peerAddress)
 	for len(pending) > 0 {
+		if p.isShuttingDown() {
+			return
+		}
 		n, size := 0, 0
 		for n < len(pending) && n < SyncChunkSize {
 			bs := pending[n].Size()
@@ -333,6 +386,16 @@ func (p *PeerServer) pushChainToPeer(peerAddress string, peerHeight int) {
 			return
 		}
 		pending = pending[n:]
-		time.Sleep(50 * time.Millisecond)
+		if quitCh != nil {
+			timer := time.NewTimer(50 * time.Millisecond)
+			select {
+			case <-timer.C:
+			case <-quitCh:
+				timer.Stop()
+				return
+			}
+		} else {
+			time.Sleep(50 * time.Millisecond)
+		}
 	}
 }

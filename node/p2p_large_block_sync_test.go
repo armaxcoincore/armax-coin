@@ -3,6 +3,7 @@
 package node
 
 import (
+	"bufio"
 	"encoding/json"
 	"path/filepath"
 	"testing"
@@ -285,5 +286,94 @@ func TestP2_5_ForkResolutionWithLargeBlocks(t *testing.T) {
 	if lenA != lenB || tipA != tipB {
 		t.Fatalf("Fork resolution mismatch: Node A height %d tip %s, Node B height %d tip %s",
 			lenA, tipA, lenB, tipB)
+	}
+}
+
+// TestP2_5_LargeBlockAbove4MBOverNewBlock verifies that a NEW_BLOCK JSON frame > 4.2 MiB
+// (and < MaxIncomingPacketSize 8 MiB) is read and unmarshaled over TLS without dropping the connection,
+// allowing subsequent RPCs on the same TCP/TLS connection to succeed cleanly.
+func TestP2_5_LargeBlockAbove4MBOverNewBlock(t *testing.T) {
+	core.SetTargetOverrideForTesting(core.DifficultyToTarget(1))
+	defer core.SetTargetOverrideForTesting(nil)
+
+	t.Setenv("ARMX_DATA_DIR", t.TempDir())
+	t.Setenv("ARMX_ALLOW_PRIVATE_PEERS", "1")
+
+	dir := filepath.Join(t.TempDir(), "node4mb")
+	bc := core.NewBlockchain(1)
+	bc.StoragePath = filepath.Join(dir, "blockchain.db")
+	defer bc.Close()
+
+	port := getFreePort(t)
+	ps := NewPeerServer(port, bc, dir)
+	defer ps.Stop()
+	go ps.StartServer()
+
+	startDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(startDeadline) {
+		if ps.GetState() == ServerStateRunning {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if ps.GetState() != ServerStateRunning {
+		t.Fatalf("PeerServer did not reach running state: %v", ps.GetState())
+	}
+
+	targetAddr := "127.0.0.1:" + port
+	senderAcc := newTestAccount(t, "large4mb_sender")
+	recipAcc := newTestAccount(t, "large4mb_recip")
+	fundAccount(bc, senderAcc.Address, 10_000_000*core.CoinUnit)
+
+	largeBlock := createLargeBlock(t, bc, senderAcc, recipAcc, 410)
+	msgNewBlock := Message{
+		NetworkID: NetworkID(),
+		Type:      "NEW_BLOCK",
+		Payload:   largeBlock,
+	}
+	data, err := json.Marshal(msgNewBlock)
+	if err != nil {
+		t.Fatalf("Marshal >4.2 MiB NEW_BLOCK failed: %v", err)
+	}
+	if len(data) <= 4*1024*1024+200*1024 || len(data) >= MaxIncomingPacketSize {
+		t.Fatalf("expected NEW_BLOCK JSON frame between 4.2 MiB and 8 MiB, got %d bytes", len(data))
+	}
+	t.Logf("[P2P] Sending >4.2 MiB NEW_BLOCK JSON wire frame (%d bytes)", len(data))
+
+	conn, _, err := DialEncrypted(targetAddr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("DialEncrypted failed: %v", err)
+	}
+	defer conn.Close()
+
+	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	if _, err := conn.Write(append(data, '\n')); err != nil {
+		t.Fatalf("write >4.2 MiB NEW_BLOCK failed: %v", err)
+	}
+
+	// Follow immediately with GET_HEIGHT on the exact same connection to prove HandleConnection stayed alive.
+	pingMsg, err := json.Marshal(Message{
+		NetworkID: NetworkID(),
+		Type:      "GET_HEIGHT",
+	})
+	if err != nil {
+		t.Fatalf("marshal GET_HEIGHT: %v", err)
+	}
+	if _, err := conn.Write(append(pingMsg, '\n')); err != nil {
+		t.Fatalf("write follow-up GET_HEIGHT failed: %v", err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	reader := bufio.NewReaderSize(conn, 64*1024)
+	respLine, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("expected HEIGHT_RESPONSE on same connection after >4.2 MiB frame, got err: %v", err)
+	}
+	var resp Message
+	if err := json.Unmarshal([]byte(respLine), &resp); err != nil {
+		t.Fatalf("unmarshal HEIGHT_RESPONSE: %v", err)
+	}
+	if resp.Type != "HEIGHT_RESPONSE" {
+		t.Fatalf("expected HEIGHT_RESPONSE, got %q", resp.Type)
 	}
 }
