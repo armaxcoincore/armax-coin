@@ -173,6 +173,16 @@ Newly mined block rewards require **10 confirmations** on Testnet (100 on Mainne
 
 ---
 
+## Get Involved & Contributing
+
+**Armaxcoin is an open-source community project.** See something that can be improved? Join the discussion, report it, or send a Pull Request.
+
+- **Open Participation:** Anyone can ask questions, report bugs, run a node or miner, test releases, improve documentation, or submit code via forks and Pull Requests — **no GitHub Organization membership or formal appointment is required**.
+- **Contribution Guide:** Read [`CONTRIBUTING.md`](CONTRIBUTING.md) for our lightweight workflow, proportionally scoped review guidelines, Go build/test commands, and DCO (`Signed-off-by`) requirements, and please follow our [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+- **Bug Reports & Feature Ideas:** Use [GitHub Issues](https://github.com/armaxcoincore/armax-coin/issues) (or Discussions for larger protocol ideas). For security vulnerabilities, **always** report privately as described in [`SECURITY.md`](SECURITY.md).
+
+---
+
 ## License & Support
 
 Armaxcoin is released under the [MIT License](LICENSE).

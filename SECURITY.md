@@ -37,7 +37,7 @@ We take the security of the Armaxcoin network and its users seriously. If you di
 
 ### 1. RPC & Local Service Interface
 - By default, the Armaxcoin RPC daemon (`armcoind`) binds strictly to loopback interface `127.0.0.1:19332` on mainnet (`127.0.0.1:19333` on testnet).
-- All upcoming auxiliary local services (API Explorer `19340`, Web Explorer `19341` (Planned / Removed), Wallet API `19342`, Metrics `19343`) are also designed and specified to bind strictly to `127.0.0.1` loopback by default.
+- All upcoming auxiliary local services (API Explorer `19340`, Web Explorer `19341`, Wallet API `19342`, Metrics `19343`) are also designed and specified to bind strictly to `127.0.0.1` loopback by default.
 - Mutating and mining endpoints (`/mine`, `/mine/stop`, `/getblocktemplate`, `/block/submit`, `/peers`) require valid authentication or local non-CORS context. `/mine` and `/getblocktemplate` return `HTTP 503 Service Unavailable` until initial P2P synchronization completes, preventing unsynced miners from relaying behind-tip blocks and incurring peer IP bans.
 - If exposed to external networks via `-rpcbind 0.0.0.0`, administrators MUST configure strong HTTP Basic Auth credentials and a TLS certificate/key (`ARMX_RPC_TLS_CERT`, `ARMX_RPC_TLS_KEY`). The daemon rejects a public RPC bind without both controls.
 

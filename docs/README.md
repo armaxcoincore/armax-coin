@@ -36,6 +36,14 @@ This documentation directory contains official user guides, operator manuals, sp
 - [v1.0.7 Release Notes](releases/v1.0.7.md): Testnet Consensus Fork (Block 20,000), Sync & Storage Optimization, and Subsystem Hardening.
 - [v1.0.6 Release Notes](releases/v1.0.6.md): Testnet Core v1.0.6 stability, security hardening, and P2P deduplication.
 
+## 5. Community, Contributing & Preliminary Policy
+
+- [Contributing Guidelines](../CONTRIBUTING.md): Welcoming workflow for bug reports, docs, and code Pull Requests (no GitHub Org membership required).
+- [Code of Conduct](../CODE_OF_CONDUCT.md): Community standards and respectful collaboration guidelines.
+- [Contributors](community/CONTRIBUTORS.md): Recognized contributors across Git history.
+- [Accessibility Statement](community/ACCESSIBILITY.md): Accessibility status and feedback channels across GUI, CLI, and docs.
+- [Treasury & Testnet Miner Migration Plan (Preliminary Non-Final Plan)](governance/TREASURY_MIGRATION_PLAN.md): Draft framework under ongoing evaluation (ratio and final terms remain TBA).
+
 ---
 
 > [!NOTE]
