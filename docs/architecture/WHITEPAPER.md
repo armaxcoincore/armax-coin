@@ -1,6 +1,6 @@
 # Armaxcoin (ARMX) Technical Whitepaper
 
-**Version:** 1.0.12 (Active Testnet Release)
+**Version:** 1.0.13 (Pre-Release Preparation — Public Testnet)
 **Ticker:** `ARMX` (mainnet; testnet GUI and explorer display `tARMX`)
 **Network Profiles:** `ARMX-TESTNET-1` (active default) and `ARMX-MAINNET-1` (locked; not launched)
 **Consensus:** Proof-of-Work (PoW) with Armax-ASERT-AW (`aserti3-2d`, `#13,335+`) & historical LWMA-1 ($N=60$)
@@ -27,7 +27,7 @@ ARMX combines a 126,000,000 supply cap, a roughly four-year halving schedule, an
 | **Fork Choice Rule** | Heaviest Chain (Cumulative Chainwork) | Among eligible branches, the node prefers greater cumulative work, subject to its reorganization-depth limit |
 | **Max Reorganization Depth** | 720 Blocks (~24 hours at target cadence) | Local reorganization-depth policy limit; not protocol finality or a guarantee that transactions cannot be reorganized |
 | **Max Block Transactions** | 1,000 Txs / Block | Consensus transaction-count limit; block-size and packet-size limits also apply |
-| **Block Size Limits** | MaxBlockSize = 2 MB, MaxTxSize = 20 KB | MaxIncomingPacketSize = 4 MB; pre-#20,000 Testnet JSON capacity: 185 user txs (~10,761 B/tx); from `BlockBinarySizeActivationHeight` (`#20,000` Testnet unified with C6 / `#0` Mainnet) `TxBinaryV1` binary accounting (~5,320 B/tx) expands capacity to **375 user transactions** (376 total with coinbase; see `docs/PERF.md`) |
+| **Block Size Limits** | MaxBlockSize = 2 MB, MaxTxSize = 20 KB | MaxIncomingPacketSize = 8 MiB; pre-#20,000 Testnet JSON capacity: 185 user txs (~10,761 B/tx); from `BlockBinarySizeActivationHeight` (`#20,000` Testnet unified with C6 / `#0` Mainnet) `TxBinaryV1` binary accounting (~5,320 B/tx) expands capacity to **375 user transactions** (376 total with coinbase; see `docs/PERF.md`) |
 | **Block Structure** | Binary Merkle Tree | Canonical 32-byte Merkle root in header enabling SPV light proofs |
 | **Hashing Algorithm** | ArmaxHash v2 (Stream-Fast Chained BLAKE2b) for $H \ge 2500$ / ArmaxHash v1 for $520 \le H < 2500$ / SHA-256d for $H < 520$ | The v2 hash-function benchmark reports 0 allocations/op for a fixed header; this does not establish zero allocations for the full block/miner path. See docs/CONSENSUS_AND_NETWORK.md |
 | **Digital Signatures** | NIST FIPS 204 (ML-DSA-65) | Quantum-resistant signatures (NIST FIPS 204, ML-DSA-65): Public key 1,952 bytes, Signature 3,309 bytes |

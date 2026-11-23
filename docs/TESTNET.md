@@ -325,14 +325,14 @@ sudo systemctl start armcoind-testnet
 
 ---
 
-## 9. Node Upgrade and Rollback Runbook (v1.0.12 / v1.0.11)
+## 9. Node Upgrade and Rollback Runbook (v1.0.13 / v1.0.12)
 
 > [!IMPORTANT]
 > **ACTIVE TESTNET CONSENSUS FORKS (BLOCKS 13,293, 13,335 & 20,000):**
 > - **Block 13,293 (`v1.0.9` — Anti-Stall TEDR, Active):** Activates Testnet Anti-Stall Emergency Difficulty Adjustment (`AntiStallActivationHeight = 13293`). When a candidate block's timestamp exceeds the parent block's timestamp by more than **1,200 seconds (20 minutes)**, the candidate block qualifies for the emergency fallback target (`ArmaxHashPowLimitHex`, Difficulty 3) with Model 3 Synthetic Target Normalization (`720s` solve time, anchored to `lastNormalTarget`).
 > - **Block 13,335 (`v1.0.10` — Armax-ASERT-AW, Active):** Transitions the Testnet DAA from LWMA-1 ($N=60$) to **Armax-ASERT-AW (`aserti3-2d`)** (`ASERTActivationHeight = 13335`, anchored to Block `#13,334`, $T = 120\text{s}$, $\tau = 3600\text{s}$, per-block surge cap `14,400s`, TEDR boost `7,200s`).
-> - **Block 20,000 (`v1.0.11+` — Unified Proposal C6 + `TxBinaryV1`, Active):** Enforces `FutureTimestampLimitActivationHeight = 20000` (**`+600s`** forward timestamp limit with adaptive `5s`/`30s` miner margins) and `BlockBinarySizeActivationHeight = 20000` (`TxBinaryV1` binary accounting allowing **375 user ML-DSA-65 transactions** per 2 MB block). **`v1.0.12`** preserves 100% consensus & P2P wire compatibility with `v1.0.11` (zero hard forks or activation-height changes) while adding Desktop GUI v2 (`"Waiting for Sync"` queue, WebView2, Windows Tray, Multi-Wallet), Node Sync Gate (`HTTP 503`), integrated multi-thread CPU optimization (`V2JobHasher` + padded worker slots + physical-core default), Stratum TLS, additive Node RPC, and Go `1.27.4`.
-> - All node operators, miners, and GUI users should upgrade cleanly to **`v1.0.12`** while keeping clocks synchronized with NTP.
+> - **Block 20,000 (`v1.0.11+` — Unified Proposal C6 + `TxBinaryV1`, Active):** Enforces `FutureTimestampLimitActivationHeight = 20000` (**`+600s`** forward timestamp limit with adaptive `5s`/`30s` miner margins) and `BlockBinarySizeActivationHeight = 20000` (`TxBinaryV1` binary accounting allowing **375 user ML-DSA-65 transactions** per 2 MB block). **`v1.0.13`** preserves 100% consensus & P2P wire compatibility with `v1.0.10`–`v1.0.12` (zero hard forks or activation-height changes) while adding P2P DoS/slot isolation hardening (`38/12`), pre-snapshot storage verification, wallet/GUI/miner security, and Go `1.27.4`.
+> - All node operators, miners, and GUI users should upgrade cleanly to **`v1.0.13`** while keeping clocks synchronized with NTP.
 
 > [!CAUTION]
 > **STORAGE COMPATIBILITY & ROLLBACK WARNING:**
@@ -343,7 +343,7 @@ sudo systemctl start armcoind-testnet
 > ```
 > Always back up `blockchain.db` before executing store conversion.
 
-### Seamless Upgrade Procedure to v1.0.12
+### Seamless Upgrade Procedure to v1.0.13
 1. Verify the current tip height and peer connectivity:
    ```bash
    curl -s http://127.0.0.1:19333/status | jq .
@@ -362,10 +362,10 @@ sudo systemctl start armcoind-testnet
    ```
 4. Back up the database and working binary:
    ```bash
-   sudo cp /usr/local/bin/armcoind /usr/local/bin/armcoind.v1011.bak
-   sudo tar -czvf /var/backups/armax_db_pre_v1012_$(date +%F).tar.gz -C /var/armax testnet/blockchain.db
+   sudo cp /usr/local/bin/armcoind /usr/local/bin/armcoind.v1012.bak
+   sudo tar -czvf /var/backups/armax_db_pre_v1013_$(date +%F).tar.gz -C /var/armax testnet/blockchain.db
    ```
-5. Install the new v1.0.12 binary:
+5. Install the new v1.0.13 binary:
    ```bash
    sudo cp armcoind /usr/local/bin/armcoind
    sudo chmod 755 /usr/local/bin/armcoind
@@ -375,19 +375,19 @@ sudo systemctl start armcoind-testnet
    sudo systemctl start armcoind-testnet
    sudo journalctl -u armcoind-testnet -n 50 --no-pager
    ```
-7. Verify running software version is `"1.0.12"`:
+7. Verify running software version is `"1.0.13"`:
    ```bash
    curl -s http://127.0.0.1:19333/status | jq .version
-   # Expected output: "1.0.12"
+   # Expected output: "1.0.13"
    ```
 
-### Emergency Rollback Procedure (to v1.0.11)
-Because `v1.0.12` and `v1.0.11` share identical consensus and BoltDB state schemas:
+### Emergency Rollback Procedure (to v1.0.12)
+Because `v1.0.13` and `v1.0.12` share identical consensus and BoltDB state schemas:
 1. Stop the daemon:
    ```bash
    sudo systemctl stop armcoind-testnet
    ```
-2. Restore the `v1.0.11` binary (`armcoind.v1011.bak`) and restart `armcoind-testnet` (note: do **not** roll back below `v1.0.11` on a post-Block `#20,000` chain). See [`releases/v1.0.12.md`](releases/v1.0.12.md) for full details.
+2. Restore the `v1.0.12` binary (`armcoind.v1012.bak`) and restart `armcoind-testnet` (note: do **not** roll back below `v1.0.11` on a post-Block `#20,000` chain). See [`releases/v1.0.13.md`](releases/v1.0.13.md) for full details.
 
 ---
 

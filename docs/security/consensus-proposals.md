@@ -6,10 +6,10 @@
 - **C3:** AUDITED & VERIFIED via `core/tx_preimage_canonicality_test.go` (audit test suite completed; confirms existing preimage bindings and replay defenses without requiring consensus changes).
 - **C4 & C5:** DRAFT SPECIFICATIONS ONLY — Not implemented in active code (C4 drafted as an unratified TTL idea for future evaluation; C5 evaluated as local node policy). Unratified for active consensus deployment.
 
-**v1.0.11 / v1.0.12 note:** C6 (future-timestamp limit 2 hours -> 10 minutes) is active at Testnet Block `#20,000` simultaneously with canonical `TxBinaryV1` binary block size accounting (`375` user ML-DSA-65 txs / 2 MB block), while `armminer` applies adaptive `5s`/`30s` safety margins for inherited forward-drifted tips. Locked pre-launch `ARMX-MAINNET-1` currently stages C6 (`FutureTimestampLimitActivationHeight = 0`) alongside ArmaxHash v2 (`1`), Armax-ASERT-AW (`0`), C1/C2 (`0`), and `TxBinaryV1` (`0`) solely as a provisional pre-launch configuration (`MainnetLaunched = false`, subject to change before launch freeze), while soak and regtest profiles keep `-1`. `v1.0.12` introduces zero Testnet consensus rule changes. C3 was audited without consensus alterations. C4 and C5 remain design drafts.
+**v1.0.11 / v1.0.12 / v1.0.13 note:** C6 (future-timestamp limit 2 hours -> 10 minutes) is active at Testnet Block `#20,000` simultaneously with canonical `TxBinaryV1` binary block size accounting (`375` user ML-DSA-65 txs / 2 MB block), while `armminer` applies adaptive `5s`/`30s` safety margins for inherited forward-drifted tips. Locked pre-launch `ARMX-MAINNET-1` currently stages C6 (`FutureTimestampLimitActivationHeight = 0`) alongside ArmaxHash v2 (`1`), Armax-ASERT-AW (`0`), C1/C2 (`0`), `TxBinaryV1` (`0`), and `MempoolBinaryFeeActivationHeight = 0` solely as a provisional pre-launch configuration (`MainnetLaunched = false`, subject to change before launch freeze), while soak and regtest profiles keep `-1`. `v1.0.13` introduces zero Testnet consensus rule changes (`Option 1A` and `Option 2A-i` preserve `v1.0.12` Testnet compatibility). C3 was audited without consensus alterations. C4 and C5 remain design drafts.
 **Target Network:** `ARMX-TESTNET-1` (Provisional Staging on Locked `ARMX-MAINNET-1`)  
 **Author:** Armaxcoin Core Security & Consensus Engineering  
-**Date:** Updated November 2026 (v1.0.12 Testnet Release Cycle)
+**Date:** Updated November 2026 (v1.0.13 Testnet Release Cycle)
 
 ---
 

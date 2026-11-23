@@ -47,7 +47,7 @@ go build -trimpath -o armwallet ./cli/armwallet
 # 5. Desktop GUI Wallet v2 & Node Explorer (armgui — pure Go CGO_ENABLED=0)
 # Uses embedded Microsoft Edge WebView2 + Shell_NotifyIconW system tray on Windows,
 # and local web server with browser interop + POSIX 0600 fallback on Linux/WSL/macOS.
-# MUST compile package directory './gui' to embed rsrc_windows_amd64.syso (manifest version 1.0.12.0 & icon).
+# MUST compile package directory './gui' to embed rsrc_windows_amd64.syso (manifest version 1.0.13.0 & icon).
 CGO_ENABLED=0 go build -trimpath -ldflags="-H=windowsgui" -o armgui.exe ./gui
 ```
 
@@ -88,7 +88,7 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -buil
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -buildid=" -o dist/windows-amd64/armminer.exe ./miner
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -buildid=" -o dist/windows-amd64/armsend.exe ./cli/armsend
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -buildid=" -o dist/windows-amd64/armwallet.exe ./cli/armwallet
-# Package path './gui' links rsrc_windows_amd64.syso (manifest version 1.0.12.0 & icon) and dynamically loads WebView2Loader.dll at runtime
+# Package path './gui' links rsrc_windows_amd64.syso (manifest version 1.0.13.0 & icon) and dynamically loads WebView2Loader.dll at runtime
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -buildid= -H windowsgui" -o dist/windows-amd64/armgui.exe ./gui
 cp gui/armgui.exe.manifest dist/windows-amd64/
 ```

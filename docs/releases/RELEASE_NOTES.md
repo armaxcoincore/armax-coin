@@ -1,5 +1,24 @@
 # Armaxcoin Release Notes
 
+## Armaxcoin v1.0.13
+
+**Target Release:** Armaxcoin v1.0.13 — P2P DoS & Slot Isolation Hardening, Consensus/Storage Integrity, Wallet/Miner/GUI Security, and `github.com/armaxcoincore/armax-coin` Migration
+
+**Status:** Pre-Release Preparation (100% rolling P2P & consensus backward compatible with `v1.0.10`–`v1.0.12` on `ARMX-TESTNET-1`; zero hard forks; `MainnetLaunched = false` with Mainnet provisional and subject to change prior to launch freeze)
+
+**Detailed Technical Specification:** [docs/releases/v1.0.13.md](v1.0.13.md)
+
+### Highlights
+
+1. **P2P DoS Resilience, Slot Isolation & Session Stability (`node/` — PR `#23`, `#26`, Track 3):**
+   - Enforced separate `38` inbound / `12` outbound slot caps, heartbeat-agnostic non-seed LRU outbound eviction, `MaxInboundFingerprints = 2048` RAM FIFO cache, `8 MiB` `MaxIncomingPacketSize` + `32 MiB` large-frame lease budget, `MaxOrphanTxsPerPeer = 25` pre-verify reservations, strict `SeedHost` pin matching, 3-minute periodic runtime map GC, TLS 1.3 `VerifyConnection` SPKI checks, fail-closed `p2ptls.pem` loading, and unified 3-tier `FutureTimestampError` clock-skew parity.
+2. **Crypto, Consensus & Storage Integrity (`core/`, `core/pqsig/` — Tracks 1–2):**
+   - Added ML-DSA-65 key/seed zeroization, full pre-snapshot block (`validateBlockContext` + `tx.Verify()`) and per-account snapshot verification on `LoadFromFile`, reorg mempool sender-nonce ordering, `Option 1A` Mainnet strict canonical hex/coinbase/Genesis enforcement (preserving `v1.0.12` Testnet compatibility), and `Option 2A-i` `MempoolBinaryFeeActivationHeight` separation.
+3. **Wallet, GUI, Miner, Build & Adversarial Verification (`wallet/`, `gui/`, `miner/`, `scripts/` — Tracks 4–6):**
+   - Enforced atomic `0600` keystore writes, `1 MiB` bounded reads, buffer zeroization, strict 24-word BIP-39 checksum validation, GUI localhost origin verification + constant-time session tokens, Stratum `256 KiB` line framing, `CGO_ENABLED=0` + `-trimpath -ldflags="-s -w -buildid="` in `scripts/build.sh`, and an 8-scenario adversarial + `375` ML-DSA-65 tx full-block benchmark suite (`393.50ms` verify, `215.27ms` TLS P2P E2E).
+
+---
+
 ## Armaxcoin v1.0.12
 
 **Target Release:** Armaxcoin v1.0.12 — Desktop Wallet GUI v2 (`"Waiting for Sync"`, WebView2 & System Tray), Node Sync Gate (`HTTP 503`), Integrated Multi-Thread CPU Optimization, Stratum TLS, and Go `1.27.4`  
