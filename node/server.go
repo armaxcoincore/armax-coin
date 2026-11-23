@@ -277,6 +277,14 @@ func isMutatingEndpoint(path string, method string) bool {
 
 // isAuthorizedMiner checks if caller has valid X-Mine-Key or valid RPC credentials
 func isAuthorizedMiner(r *http.Request, cfg *ServerConfig) bool {
+	clientIP, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil || clientIP == "" {
+		clientIP = r.RemoteAddr
+	}
+	if globalAuthLockout.isLocked(clientIP) {
+		return false
+	}
+
 	configuredKey := ""
 	if cfg != nil && cfg.MineKey != "" {
 		configuredKey = cfg.MineKey
@@ -287,10 +295,6 @@ func isAuthorizedMiner(r *http.Request, cfg *ServerConfig) bool {
 	if configuredKey != "" {
 		clientKey := r.Header.Get("X-Mine-Key")
 		if clientKey != "" && constantTimeCompare(clientKey, configuredKey) {
-			clientIP, _, err := net.SplitHostPort(r.RemoteAddr)
-			if err != nil || clientIP == "" {
-				clientIP = r.RemoteAddr
-			}
 			globalAuthLockout.recordSuccess(clientIP)
 			return true
 		}
@@ -1917,6 +1921,10 @@ func ValidateRPCBind(cfg *Config) error {
 		if cfg.AllowNonLoopbackRPC {
 			return fmt.Errorf("local mainnet mode strictly prohibits allow_non_loopback_rpc")
 		}
+	}
+
+	if (cfg.RPCTLSCert != "") != (cfg.RPCTLSKey != "") {
+		return errors.New("both rpc_tls_cert and rpc_tls_key must be configured together")
 	}
 
 	if !isLoopback {
