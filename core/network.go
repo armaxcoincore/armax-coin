@@ -63,8 +63,11 @@ type NetworkProfile struct {
 	// BlockBinarySizeActivationHeight is the first block height where MaxBlockSize and MaxTxSize
 	// are evaluated using compact TxBinaryV1 binary size (BinarySize) instead of legacy JSON Size.
 	// Negative disables it.
-	BlockBinarySizeActivationHeight int64          `json:"block_binary_size_activation_height"`
-	Checkpoints                     map[int]string `json:"checkpoints,omitempty"`
+	BlockBinarySizeActivationHeight int64 `json:"block_binary_size_activation_height"`
+	// MempoolBinaryFeeActivationHeight is the first block height where mempool and wallet relay fees
+	// switch from legacy JSON Size() to compact TxBinaryV1 BinarySize(). Negative disables it.
+	MempoolBinaryFeeActivationHeight int64          `json:"mempool_binary_fee_activation_height"`
+	Checkpoints                      map[int]string `json:"checkpoints,omitempty"`
 }
 
 var (
@@ -89,6 +92,7 @@ var (
 		AntiStallActivationHeight:            -1, // Strictly disabled on Mainnet
 		ASERTActivationHeight:                0,  // Armax-ASERT-AW active from Block #1 (anchored to Genesis #0)
 		BlockBinarySizeActivationHeight:      0,  // TxBinaryV1 active from Genesis #0 on Mainnet (MainnetLaunched remains false)
+		MempoolBinaryFeeActivationHeight:     0,  // Compact TxBinaryV1 relay fee active from Genesis #0 on Mainnet
 		Checkpoints: map[int]string{
 			0: GenesisHash,
 		},
@@ -122,7 +126,8 @@ var (
 		// Hard fork: Armax-ASERT-AW DAA engine from block #13335 on testnet.
 		ASERTActivationHeight: 13335,
 		// Hard fork: TxBinaryV1 block/tx size evaluation from block #20000 on testnet.
-		BlockBinarySizeActivationHeight: 20000,
+		BlockBinarySizeActivationHeight:  20000,
+		MempoolBinaryFeeActivationHeight: -1, // Keep JSON-size relay fee (11,000 Armoids) on mixed v1.0.12/v1.0.13 Testnet
 		Checkpoints: map[int]string{
 			0: TestnetGenesisHash,
 		},
@@ -152,6 +157,7 @@ var (
 		AntiStallActivationHeight:            -1,
 		ASERTActivationHeight:                -1,
 		BlockBinarySizeActivationHeight:      -1,
+		MempoolBinaryFeeActivationHeight:     -1,
 	}
 
 	// RegtestProfile defines private local regression testing profile [L4-8]
@@ -175,6 +181,7 @@ var (
 		AntiStallActivationHeight:            -1,
 		ASERTActivationHeight:                -1,
 		BlockBinarySizeActivationHeight:      -1,
+		MempoolBinaryFeeActivationHeight:     -1,
 	}
 )
 
@@ -196,6 +203,7 @@ var (
 	antiStallActivationHeightOverride       *int64 // nil means use network profile
 	asertActivationHeightOverride           *int64 // nil means use network profile
 	blockBinarySizeActivationHeightOverride *int64 // nil means use network profile
+	mempoolBinaryFeeActivationHeightOverride *int64 // nil means use network profile
 	testGlobalNetworkLock                   sync.Mutex
 
 	localMainnetMu      sync.RWMutex
@@ -279,7 +287,7 @@ func GetArmaxHashActivationHeight() int64 {
 	// Rehearsal hook: strictly regtest only to protect production consensus [HIGH-02]
 	if ActiveNetwork.Name == "regtest" {
 		if val := os.Getenv("ARMX_ARMAXHASH_HEIGHT"); val != "" {
-			if h, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64); err == nil {
+			if h, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64); err == nil && h >= -1 && h <= math.MaxInt32 {
 				return h
 			}
 		}
@@ -415,7 +423,7 @@ func GetAntiStallActivationHeight() int64 {
 	// Rehearsal hook: strictly regtest only to protect production consensus
 	if ActiveNetwork.Name == "regtest" {
 		if val := os.Getenv("ARMX_ANTI_STALL_HEIGHT"); val != "" {
-			if h, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64); err == nil {
+			if h, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64); err == nil && h >= -1 && h <= math.MaxInt32 {
 				return h
 			}
 		}
@@ -517,7 +525,7 @@ func GetBlockBinarySizeActivationHeight() int64 {
 	}
 	if ActiveNetwork.Name == "regtest" {
 		if val := os.Getenv("ARMX_BINARY_SIZE_HEIGHT"); val != "" {
-			if h, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64); err == nil {
+			if h, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64); err == nil && h >= -1 && h <= math.MaxInt32 {
 				return h
 			}
 		}
@@ -543,6 +551,47 @@ func ResetBlockBinarySizeActivationHeightOverride() {
 // rather than legacy JSON Size().
 func IsBlockBinarySizeActive(blockIndex int) bool {
 	act := GetBlockBinarySizeActivationHeight()
+	if act < 0 || blockIndex < 0 {
+		return false
+	}
+	return int64(blockIndex) >= act
+}
+
+// GetMempoolBinaryFeeActivationHeight returns the block height where mempool and wallet relay fees
+// switch to compact TxBinaryV1 BinarySize(). A negative value preserves legacy JSON Size() fees.
+func GetMempoolBinaryFeeActivationHeight() int64 {
+	netMu.RLock()
+	defer netMu.RUnlock()
+	if mempoolBinaryFeeActivationHeightOverride != nil {
+		return *mempoolBinaryFeeActivationHeightOverride
+	}
+	if ActiveNetwork.Name == "regtest" {
+		if val := os.Getenv("ARMX_MEMPOOL_BINARY_FEE_HEIGHT"); val != "" {
+			if h, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64); err == nil && h >= -1 && h <= math.MaxInt32 {
+				return h
+			}
+		}
+	}
+	return ActiveNetwork.MempoolBinaryFeeActivationHeight
+}
+
+// SetMempoolBinaryFeeActivationHeight dynamically overrides the binary mempool fee activation height (for tests).
+func SetMempoolBinaryFeeActivationHeight(height int64) {
+	netMu.Lock()
+	defer netMu.Unlock()
+	mempoolBinaryFeeActivationHeightOverride = &height
+}
+
+// ResetMempoolBinaryFeeActivationHeightOverride restores the network profile default.
+func ResetMempoolBinaryFeeActivationHeightOverride() {
+	netMu.Lock()
+	defer netMu.Unlock()
+	mempoolBinaryFeeActivationHeightOverride = nil
+}
+
+// IsMempoolBinaryFeeActive returns true if mempool/wallet fee calculation at blockIndex uses BinarySize() (TxBinaryV1).
+func IsMempoolBinaryFeeActive(blockIndex int) bool {
+	act := GetMempoolBinaryFeeActivationHeight()
 	if act < 0 || blockIndex < 0 {
 		return false
 	}

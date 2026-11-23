@@ -245,12 +245,16 @@ func ValidateGenesisBlockForNetwork(b *Block, netID string) error {
 	if len(b.Transactions) != len(gen.Transactions) {
 		return fmt.Errorf("genesis block transaction count mismatch: got %d, expected %d", len(b.Transactions), len(gen.Transactions))
 	}
+	strictGenesis := isStrictCoinbaseConsensusActive(netID)
 	for i := range b.Transactions {
 		t1 := b.Transactions[i]
 		t2 := gen.Transactions[i]
 		if t1.Sender != t2.Sender || t1.Recipient != t2.Recipient || t1.Amount != t2.Amount ||
 			t1.Fee != t2.Fee || t1.Nonce != t2.Nonce || t1.Signature != t2.Signature ||
 			t1.Type != t2.Type || t1.SenderPub != t2.SenderPub {
+			return fmt.Errorf("genesis transaction %d payload mismatch", i)
+		}
+		if strictGenesis && (t1.SigAlg != t2.SigAlg || t1.HashLock != t2.HashLock || t1.TimeLock != t2.TimeLock || t1.Preimage != t2.Preimage) {
 			return fmt.Errorf("genesis transaction %d payload mismatch", i)
 		}
 		if t1.WitnessHashHexForNetwork(netID) != t2.WitnessHashHexForNetwork(netID) {

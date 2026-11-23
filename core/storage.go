@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/armaxcoincore/armax-coin/core/pqsig"
 	bolt "go.etcd.io/bbolt"
 	bboltErrors "go.etcd.io/bbolt/errors"
 )
@@ -168,6 +170,70 @@ func (bc *Blockchain) saveToFileFrom(startHeight int) error {
 			}
 		}
 
+		// Two-phase store update: delete all overridden/pruned block hashes and tx index entries
+		// BEFORE writing new blocks/tx indices so transactions that shift to an earlier height
+		// during reorganization are never deleted from bktTxIndex by later height cleanup.
+		needWrite := make([]bool, len(bc.Chain)-startHeight)
+		for i := startHeight; i < len(bc.Chain); i++ {
+			b := &bc.Chain[i]
+			hBytes := uint64ToBytes(uint64(b.Index))
+
+			existing := bktB.Get(hBytes)
+			if existing == nil {
+				needWrite[i-startHeight] = true
+				continue
+			}
+			var oldB Block
+			if err := unmarshalRecord(existing, &oldB); err != nil || oldB.Hash != b.Hash {
+				needWrite[i-startHeight] = true
+				if reorgStartHeight == -1 {
+					reorgStartHeight = b.Index
+				}
+				if oldB.Hash != "" {
+					_ = bktH.Delete([]byte(oldB.Hash))
+				}
+				for _, oldTx := range oldB.Transactions {
+					_ = bktT.Delete([]byte(oldTx.HashHex()))
+				}
+				if bktS != nil {
+					_ = bktS.Delete(hBytes)
+				}
+				if bktU != nil {
+					_ = bktU.Delete(hBytes)
+				}
+			}
+		}
+
+		if bktM != nil && len(bc.Chain) > 0 {
+			// Prune any orphaned heights above the current chain tip before re-indexing newTip blocks
+			newTip := uint64(bc.Chain[len(bc.Chain)-1].Index)
+			if oldTipBytes := bktM.Get(keyTipHeight); oldTipBytes != nil {
+				oldTip := bytesToUint64(oldTipBytes)
+				for h := newTip + 1; h <= oldTip; h++ {
+					hBytes := uint64ToBytes(h)
+					if oldData := bktB.Get(hBytes); oldData != nil {
+						var oldB Block
+						if unmarshalRecord(oldData, &oldB) == nil {
+							if oldB.Hash != "" {
+								_ = bktH.Delete([]byte(oldB.Hash))
+							}
+							for _, oldTx := range oldB.Transactions {
+								_ = bktT.Delete([]byte(oldTx.HashHex()))
+							}
+						}
+						_ = bktB.Delete(hBytes)
+					}
+					_ = bktW.Delete(hBytes)
+					if bktS != nil {
+						_ = bktS.Delete(hBytes)
+					}
+					if bktU != nil {
+						_ = bktU.Delete(hBytes)
+					}
+				}
+			}
+		}
+
 		for i := startHeight; i < len(bc.Chain); i++ {
 			b := &bc.Chain[i]
 			hBytes := uint64ToBytes(uint64(b.Index))
@@ -180,33 +246,7 @@ func (bc *Blockchain) saveToFileFrom(startHeight int) error {
 			work := new(big.Int).Div(two256, divisor)
 			runningWork.Add(runningWork, work)
 
-			needWrite := false
-			existing := bktB.Get(hBytes)
-			if existing == nil {
-				needWrite = true
-			} else {
-				var oldB Block
-				if err := unmarshalRecord(existing, &oldB); err != nil || oldB.Hash != b.Hash {
-					needWrite = true
-					if reorgStartHeight == -1 {
-						reorgStartHeight = b.Index
-					}
-					if oldB.Hash != "" {
-						_ = bktH.Delete([]byte(oldB.Hash))
-					}
-					for _, oldTx := range oldB.Transactions {
-						_ = bktT.Delete([]byte(oldTx.HashHex()))
-					}
-					if bktS != nil {
-						_ = bktS.Delete(hBytes)
-					}
-					if bktU != nil {
-						_ = bktU.Delete(hBytes)
-					}
-				}
-			}
-
-			if needWrite {
+			if needWrite[i-startHeight] {
 				bData, err := json.Marshal(b)
 				if err != nil {
 					return err
@@ -254,34 +294,8 @@ func (bc *Blockchain) saveToFileFrom(startHeight int) error {
 		}
 
 		if bktM != nil {
-			// Prune any orphaned heights above the current chain tip
 			if len(bc.Chain) > 0 {
 				newTip := uint64(bc.Chain[len(bc.Chain)-1].Index)
-				if oldTipBytes := bktM.Get(keyTipHeight); oldTipBytes != nil {
-					oldTip := bytesToUint64(oldTipBytes)
-					for h := newTip + 1; h <= oldTip; h++ {
-						hBytes := uint64ToBytes(h)
-						if oldData := bktB.Get(hBytes); oldData != nil {
-							var oldB Block
-							if unmarshalRecord(oldData, &oldB) == nil {
-								if oldB.Hash != "" {
-									_ = bktH.Delete([]byte(oldB.Hash))
-								}
-								for _, oldTx := range oldB.Transactions {
-									_ = bktT.Delete([]byte(oldTx.HashHex()))
-								}
-							}
-							_ = bktB.Delete(hBytes)
-						}
-						_ = bktW.Delete(hBytes)
-						if bktS != nil {
-							_ = bktS.Delete(hBytes)
-						}
-						if bktU != nil {
-							_ = bktU.Delete(hBytes)
-						}
-					}
-				}
 				tipBytes := uint64ToBytes(newTip)
 				_ = bktM.Put(keyTipHeight, tipBytes)
 			}
@@ -444,7 +458,52 @@ func loadBlockchainFromPath(dbPath string) (*Blockchain, bool, error) {
 		mat = CoinbaseMaturity
 	}
 
-	// Initialize state
+	// Initialize state & validate continuity/snapshot integrity
+	if stateMgr != nil {
+		var continuityErr error
+		var snapSupply int64 = 0
+		var snapBalanceSum int64 = 0
+		expectedAccounts := make(map[string]AccountState, len(stateMgr.Accounts))
+
+		for h := uint64(0); h <= snapshotHeight; h++ {
+			b := &blocks[h]
+			if h > 0 {
+				if err := validateBlockContext(b, &blocks[h-1], blocks[:h], true); err != nil {
+					continuityErr = fmt.Errorf("block #%d linkage validation failed: %w", h, err)
+					break
+				}
+			}
+
+			maxReward := CalculateBlockRewardGivenSupply(int(h), snapSupply)
+			netDelta, accErr := applyAndVerifyPreSnapshotBlock(b, expectedAccounts, maxReward, mat)
+			if accErr != nil {
+				continuityErr = accErr
+				break
+			}
+			minted := BlockMintedSubsidy(b, maxReward)
+			snapSupply += minted
+			if snapSupply > MaxSupply {
+				snapSupply = MaxSupply
+			}
+			snapBalanceSum += netDelta
+		}
+		if continuityErr != nil {
+			_ = MarkDBInvalid(dbPath)
+			return nil, false, fmt.Errorf("stored database continuity check failed before snapshot #%d: %w", snapshotHeight, continuityErr)
+		}
+
+		if stateMgr.Accounts == nil {
+			stateMgr.Accounts = make(map[string]AccountState)
+		}
+		stateMgr.CoinbaseMaturity = mat
+
+		if snapErr := verifyLoadedSnapshotIntegrity(stateMgr, expectedAccounts, snapBalanceSum, int(snapshotHeight), mat); snapErr != nil {
+			fmt.Printf("[-] WARNING: State snapshot at height #%d failed integrity check (%v); rebuilding state from Genesis\n", snapshotHeight, snapErr)
+			stateMgr = nil
+			snapshotHeight = 0
+		}
+	}
+
 	if stateMgr == nil {
 		stateMgr = NewStateManager()
 		stateMgr.CoinbaseMaturity = mat
@@ -453,11 +512,6 @@ func loadBlockchainFromPath(dbPath string) (*Blockchain, bool, error) {
 			return nil, false, fmt.Errorf("genesis state application failed: %w", err)
 		}
 		snapshotHeight = 0
-	} else {
-		if stateMgr.Accounts == nil {
-			stateMgr.Accounts = make(map[string]AccountState)
-		}
-		stateMgr.CoinbaseMaturity = mat
 	}
 
 	// Calculate running supply up to snapshotHeight using actual minted subsidy [HIGH-04]
@@ -515,4 +569,171 @@ func loadBlockchainFromPath(dbPath string) (*Blockchain, bool, error) {
 
 	fmt.Printf("[OK] Blockchain database loaded and verified from: %s (%d blocks)\n", dbPath, len(bc.Chain))
 	return bc, true, nil
+}
+
+// applyAndVerifyPreSnapshotBlock deterministically replays block accounting (balances, nonces, and
+// immature reward queues) and verifies transaction signatures and coinbase invariants so snapshot loading
+// validates full block + state integrity across blocks[0..snapshotHeight].
+func applyAndVerifyPreSnapshotBlock(b *Block, expected map[string]AccountState, allowedReward int64, maturity int) (int64, error) {
+	if b == nil || len(b.Transactions) == 0 {
+		return 0, fmt.Errorf("block has no transactions")
+	}
+
+	var blockFees int64 = 0
+	for idx := 1; idx < len(b.Transactions); idx++ {
+		tx := b.Transactions[idx]
+		if strings.EqualFold(tx.Sender, "SYSTEM") || strings.EqualFold(tx.Recipient, "SYSTEM") {
+			return 0, fmt.Errorf("block #%d tx #%d invalid SYSTEM sender/recipient", b.Index, idx)
+		}
+		if tx.Amount <= 0 || tx.Amount > MaxSupply || tx.Fee < 0 || tx.Fee > MaxSupply || tx.Amount > math.MaxInt64-tx.Fee {
+			return 0, fmt.Errorf("block #%d tx #%d amount/fee out of bounds", b.Index, idx)
+		}
+		senderHex, err := AddressToHexCached(tx.Sender)
+		if err != nil {
+			return 0, fmt.Errorf("block #%d tx #%d invalid sender address: %w", b.Index, idx, err)
+		}
+		recipHex, err := AddressToHexCached(tx.Recipient)
+		if err != nil {
+			return 0, fmt.Errorf("block #%d tx #%d invalid recipient address: %w", b.Index, idx, err)
+		}
+		if strings.EqualFold(senderHex, recipHex) {
+			return 0, fmt.Errorf("block #%d tx #%d self-transfer rejected", b.Index, idx)
+		}
+		if !tx.Verify() {
+			return 0, fmt.Errorf("block #%d tx #%d cryptographic signature verification failed", b.Index, idx)
+		}
+
+		senderAcc := cloneAccountState(expected[senderHex])
+		if tx.Nonce != senderAcc.Nonce+1 {
+			return 0, fmt.Errorf("block #%d tx #%d nonce mismatch: expected %d, got %d", b.Index, idx, senderAcc.Nonce+1, tx.Nonce)
+		}
+		totalCost := tx.Amount + tx.Fee
+		if senderAcc.Spendable(b.Index, maturity) < totalCost {
+			return 0, fmt.Errorf("block #%d tx #%d insufficient spendable balance", b.Index, idx)
+		}
+		if blockFees > MaxSupply-tx.Fee {
+			return 0, fmt.Errorf("block #%d fee sum out of bounds", b.Index)
+		}
+		blockFees += tx.Fee
+
+		senderAcc.Balance -= totalCost
+		senderAcc.Nonce = tx.Nonce
+		senderAcc = senderAcc.PruneMatured(b.Index, maturity)
+		expected[senderHex] = senderAcc
+
+		recipAcc := cloneAccountState(expected[recipHex])
+		if recipAcc.Balance > MaxSupply-tx.Amount {
+			return 0, fmt.Errorf("block #%d tx #%d recipient balance exceeds MaxSupply", b.Index, idx)
+		}
+		recipAcc.Balance += tx.Amount
+		expected[recipHex] = recipAcc
+	}
+
+	cb := b.Transactions[0]
+	if cb.Sender != "SYSTEM" || cb.Fee != 0 || cb.Nonce != int64(b.Index) || cb.SenderPub != "" ||
+		(cb.Type != "" && cb.Type != TxTypeStandard) || cb.Signature != "REWARD_SIG" || cb.Amount < 0 {
+		return 0, fmt.Errorf("block #%d invalid coinbase fields", b.Index)
+	}
+	if isStrictCoinbaseConsensusActive(NetworkID()) {
+		if (cb.SigAlg != 0 && cb.SigAlg != pqsig.SigAlgMLDSA65) || cb.HashLock != "" || cb.TimeLock != 0 || cb.Preimage != "" {
+			return 0, fmt.Errorf("block #%d coinbase must not carry invalid sig_alg or HTLC/extended fields", b.Index)
+		}
+	}
+	if strings.EqualFold(cb.Recipient, "SYSTEM") || !ValidateAddress(cb.Recipient) {
+		return 0, fmt.Errorf("block #%d invalid coinbase recipient %q", b.Index, cb.Recipient)
+	}
+	if allowedReward < 0 || allowedReward > math.MaxInt64-blockFees || cb.Amount > allowedReward+blockFees {
+		return 0, fmt.Errorf("block #%d coinbase reward exceeds allowed %d + fees %d", b.Index, allowedReward, blockFees)
+	}
+	minerHex, err := AddressToHexCached(cb.Recipient)
+	if err != nil {
+		return 0, fmt.Errorf("block #%d invalid coinbase recipient: %w", b.Index, err)
+	}
+	minerAcc := cloneAccountState(expected[minerHex])
+	if minerAcc.Balance > MaxSupply-cb.Amount {
+		return 0, fmt.Errorf("block #%d miner balance exceeds MaxSupply", b.Index)
+	}
+	minerAcc.Balance += cb.Amount
+	if maturity > 0 && cb.Amount > 0 {
+		minerAcc.Immature = append(minerAcc.Immature, ImmatureReward{
+			Amount: cb.Amount,
+			Height: b.Index,
+		})
+	}
+	minerAcc = minerAcc.PruneMatured(b.Index, maturity)
+	expected[minerHex] = minerAcc
+
+	return cb.Amount - blockFees, nil
+}
+
+// verifyLoadedSnapshotIntegrity checks account invariants, total balance conservation,
+// and exact per-account balance, nonce, and immature-queue parity against expectedAccounts.
+func verifyLoadedSnapshotIntegrity(sm *StateManager, expectedAccounts map[string]AccountState, expectedBalanceSum int64, snapshotHeight int, maturity int) error {
+	if sm == nil || sm.Accounts == nil {
+		return errors.New("snapshot state manager missing")
+	}
+	if expectedBalanceSum < 0 || expectedBalanceSum > MaxSupply {
+		return fmt.Errorf("expected balance sum %d out of supply bounds", expectedBalanceSum)
+	}
+
+	var totalBalances int64 = 0
+	for addrHex, acc := range sm.Accounts {
+		if acc.Balance < 0 || acc.Balance > MaxSupply {
+			return fmt.Errorf("account %s invalid balance %d", addrHex, acc.Balance)
+		}
+		if acc.Nonce < 0 {
+			return fmt.Errorf("account %s negative nonce %d", addrHex, acc.Nonce)
+		}
+		for _, entry := range acc.Immature {
+			if entry.Amount < 0 || entry.Height < 0 || entry.Height > snapshotHeight {
+				return fmt.Errorf("account %s invalid immature entry (amount=%d height=%d snapshot=%d)", addrHex, entry.Amount, entry.Height, snapshotHeight)
+			}
+		}
+		if imm := acc.ImmatureTotal(snapshotHeight, maturity); imm < 0 || imm > acc.Balance {
+			return fmt.Errorf("account %s immature total %d exceeds balance %d", addrHex, imm, acc.Balance)
+		}
+		if acc.Balance > MaxSupply-totalBalances {
+			return fmt.Errorf("snapshot balance sum overflow past MaxSupply at account %s", addrHex)
+		}
+		totalBalances += acc.Balance
+	}
+
+	if totalBalances != expectedBalanceSum {
+		return fmt.Errorf("snapshot total balance %d mismatches expected chain balance %d", totalBalances, expectedBalanceSum)
+	}
+
+	if expectedAccounts != nil {
+		for addrHex, acc := range sm.Accounts {
+			expAcc, ok := expectedAccounts[addrHex]
+			if !ok {
+				if acc.Balance != 0 || acc.Nonce != 0 || len(acc.Immature) != 0 {
+					return fmt.Errorf("snapshot contains unexpected non-zero account %s", addrHex)
+				}
+				continue
+			}
+			if acc.Balance != expAcc.Balance {
+				return fmt.Errorf("snapshot account %s balance %d mismatches expected %d", addrHex, acc.Balance, expAcc.Balance)
+			}
+			if acc.Nonce != expAcc.Nonce {
+				return fmt.Errorf("snapshot account %s nonce %d mismatches expected %d", addrHex, acc.Nonce, expAcc.Nonce)
+			}
+			if len(acc.Immature) != len(expAcc.Immature) {
+				return fmt.Errorf("snapshot account %s immature len %d mismatches expected %d", addrHex, len(acc.Immature), len(expAcc.Immature))
+			}
+			for i := range acc.Immature {
+				if acc.Immature[i] != expAcc.Immature[i] {
+					return fmt.Errorf("snapshot account %s immature[%d] %+v mismatches expected %+v", addrHex, i, acc.Immature[i], expAcc.Immature[i])
+				}
+			}
+		}
+		for addrHex, expAcc := range expectedAccounts {
+			if expAcc.Balance == 0 && expAcc.Nonce == 0 && len(expAcc.Immature) == 0 {
+				continue
+			}
+			if _, ok := sm.Accounts[addrHex]; !ok {
+				return fmt.Errorf("snapshot missing expected account %s", addrHex)
+			}
+		}
+	}
+	return nil
 }

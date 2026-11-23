@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/armaxcoincore/armax-coin/core/pqsig"
 )
 
 // CloneCount tracks total StateManager.Clone() invocations (for telemetry and test verification).
@@ -298,11 +300,18 @@ func (sm *StateManager) VerifyAndApplyBlock(b *Block, allowedBlockReward int64, 
 	if coinbaseTx.Nonce != int64(b.Index) {
 		return fmt.Errorf("block #%d coinbase nonce must match block height %d, got %d", b.Index, b.Index, coinbaseTx.Nonce)
 	}
+	strictCoinbase := isStrictCoinbaseConsensusActive(NetworkID())
+	if strictCoinbase && coinbaseTx.SigAlg != 0 && coinbaseTx.SigAlg != pqsig.SigAlgMLDSA65 {
+		return fmt.Errorf("block #%d coinbase sig_alg must be 0 or 0x%02x, got 0x%02x", b.Index, pqsig.SigAlgMLDSA65, coinbaseTx.SigAlg)
+	}
 	if coinbaseTx.SenderPub != "" {
 		return fmt.Errorf("block #%d coinbase sender_pub must be empty", b.Index)
 	}
 	if coinbaseTx.Type != "" && coinbaseTx.Type != TxTypeStandard {
 		return fmt.Errorf("block #%d coinbase type must be empty or STANDARD, got '%s'", b.Index, coinbaseTx.Type)
+	}
+	if strictCoinbase && (coinbaseTx.HashLock != "" || coinbaseTx.TimeLock != 0 || coinbaseTx.Preimage != "") {
+		return fmt.Errorf("block #%d coinbase must not carry HTLC/extended fields", b.Index)
 	}
 	if coinbaseTx.Signature != "REWARD_SIG" {
 		return fmt.Errorf("block #%d coinbase signature sentinel mismatch", b.Index)

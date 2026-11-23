@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"time"
@@ -33,7 +34,7 @@ func GetFutureTimestampLimitActivationHeight() int64 {
 	// Rehearsal hook: regtest only, so it can never alter testnet or mainnet consensus.
 	if ActiveNetwork.Name == "regtest" {
 		if v := os.Getenv("ARMX_FUTURE_LIMIT_HEIGHT"); v != "" {
-			if h, err := strconv.ParseInt(v, 10, 64); err == nil {
+			if h, err := strconv.ParseInt(v, 10, 64); err == nil && h >= -1 && h <= math.MaxInt32 {
 				return h
 			}
 		}

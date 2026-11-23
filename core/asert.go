@@ -64,6 +64,15 @@ func ComputeASERTFromDrift(anchorTarget *big.Int, driftSeconds int64) *big.Int {
 		return DifficultyToTarget(1)
 	}
 
+	// Clamp extreme drifts beyond 260 half-lives to prevent int64 multiplication overflow
+	// and huge allocations in Lsh while preserving all 256-bit target outputs identically.
+	const maxASERTDriftSeconds = 260 * ASERT_TAU
+	if driftSeconds > maxASERTDriftSeconds {
+		driftSeconds = maxASERTDriftSeconds
+	} else if driftSeconds < -maxASERTDriftSeconds {
+		driftSeconds = -maxASERTDriftSeconds
+	}
+
 	exponent := FloorDiv(driftSeconds*asertRadix, ASERT_TAU)
 	shifts := exponent >> asertRBits
 	frac := uint64(exponent & (asertRadix - 1))

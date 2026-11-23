@@ -186,6 +186,25 @@ func EffectiveTxSize(tx *Transaction, blockIndex ...int) int {
 	return tx.Size()
 }
 
+// FeeEffectiveTxSize returns the effective transaction byte size used for mempool/wallet relay fee
+// calculation at blockIndex (or height 0 if omitted). Uses BinarySize() once MempoolBinaryFeeActivationHeight
+// is active and legacy JSON Size() prior to activation for rolling compatibility.
+func FeeEffectiveTxSize(tx *Transaction, blockIndex ...int) int {
+	if tx == nil {
+		return 0
+	}
+	h := 0
+	if len(blockIndex) > 0 {
+		h = blockIndex[0]
+	}
+	if IsMempoolBinaryFeeActive(h) {
+		if binSz := tx.BinarySize(); binSz > 0 {
+			return binSz
+		}
+	}
+	return tx.Size()
+}
+
 // BinarySize returns the deterministic byte length of the TxBinaryV1 encoding, caching the result thread-safely.
 func (tx *Transaction) BinarySize() int {
 	if cached := atomic.LoadInt32(&tx.cachedBinarySize); cached > 0 {
@@ -247,9 +266,10 @@ func (tx *Transaction) MarshalBinary() ([]byte, error) {
 	}
 
 	var pubBytes, sigBytes []byte
+	strictLower := GetActiveNetwork().IsMainnet
 	if !isCoinbase {
-		if len(tx.SenderPub) != 2*pqsig.PublicKeySize {
-			return nil, fmt.Errorf("invalid sender public key hex length: got %d, want %d", len(tx.SenderPub), 2*pqsig.PublicKeySize)
+		if len(tx.SenderPub) != 2*pqsig.PublicKeySize || !isHex(tx.SenderPub) || (strictLower && !isLowerHex(tx.SenderPub)) {
+			return nil, fmt.Errorf("invalid sender public key hex length or encoding: got %d, want %d hex chars", len(tx.SenderPub), 2*pqsig.PublicKeySize)
 		}
 		var err error
 		pubBytes, err = hex.DecodeString(tx.SenderPub)
@@ -264,8 +284,8 @@ func (tx *Transaction) MarshalBinary() ([]byte, error) {
 			flags |= txFlagCustomSender
 		}
 
-		if len(tx.Signature) != 2*pqsig.SignatureSize {
-			return nil, fmt.Errorf("invalid signature hex length: got %d, want %d", len(tx.Signature), 2*pqsig.SignatureSize)
+		if len(tx.Signature) != 2*pqsig.SignatureSize || !isHex(tx.Signature) || (strictLower && !isLowerHex(tx.Signature)) {
+			return nil, fmt.Errorf("invalid signature hex length or encoding: got %d, want %d hex chars", len(tx.Signature), 2*pqsig.SignatureSize)
 		}
 		sigBytes, err = hex.DecodeString(tx.Signature)
 		if err != nil || len(sigBytes) != pqsig.SignatureSize {
@@ -403,6 +423,9 @@ func (tx *Transaction) UnmarshalBinary(data []byte) error {
 		return fmt.Errorf("unsupported tx binary version: 0x%02x", ver)
 	}
 	flags := data[1]
+	if (flags&txFlagHasExtended) != 0 && (flags&txFlagExplicitStandardType) != 0 {
+		return errors.New("tx binary: mutually exclusive extended and explicit-standard flags set")
+	}
 	sigAlg := data[2]
 	off := 3
 
@@ -516,6 +539,9 @@ func (tx *Transaction) UnmarshalBinary(data []byte) error {
 			if err != nil {
 				return fmt.Errorf("failed reading hash_lock string: %w", err)
 			}
+			if len(hlBytes) == 0 || (len(hlBytes) == 64 && isLowerHex(string(hlBytes))) {
+				return errors.New("tx binary: non-canonical hash_lock string mode")
+			}
 			decoded.HashLock = string(hlBytes)
 		default:
 			return fmt.Errorf("invalid hash_lock mode: 0x%02x", hlMode)
@@ -540,15 +566,24 @@ func (tx *Transaction) UnmarshalBinary(data []byte) error {
 			if err != nil {
 				return fmt.Errorf("failed reading binary preimage: %w", err)
 			}
+			if len(preBytes) != 32 {
+				return fmt.Errorf("tx binary: canonical binary preimage must be 32 bytes, got %d", len(preBytes))
+			}
 			decoded.Preimage = hex.EncodeToString(preBytes)
 		case 0x02:
 			preBytes, err := readU16Bytes(data, &off)
 			if err != nil {
 				return fmt.Errorf("failed reading string preimage: %w", err)
 			}
+			if len(preBytes) == 0 || (len(preBytes) == 64 && isLowerHex(string(preBytes))) {
+				return errors.New("tx binary: non-canonical preimage string mode")
+			}
 			decoded.Preimage = string(preBytes)
 		default:
 			return fmt.Errorf("invalid preimage mode: 0x%02x", preMode)
+		}
+		if (decoded.Type == "" || decoded.Type == TxTypeStandard) && hlMode == 0x00 && decoded.TimeLock == 0 && preMode == 0x00 {
+			return errors.New("tx binary: non-canonical empty extended section")
 		}
 	} else if (flags & txFlagExplicitStandardType) != 0 {
 		decoded.Type = TxTypeStandard
@@ -601,6 +636,31 @@ func isHex(s string) bool {
 		}
 	}
 	return true
+}
+
+func isLowerHex(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidateCanonicalHex verifies that non-coinbase transaction public key and signature fields
+// use canonical lowercase hexadecimal encoding (enforced at mempool admission on all networks).
+func (tx *Transaction) ValidateCanonicalHex() error {
+	if tx == nil || tx.IsCoinbase() {
+		return nil
+	}
+	if len(tx.SenderPub) != 2*pqsig.PublicKeySize || !isLowerHex(tx.SenderPub) {
+		return fmt.Errorf("sender_pub must be %d canonical lowercase hex characters", 2*pqsig.PublicKeySize)
+	}
+	if len(tx.Signature) != 2*pqsig.SignatureSize || !isLowerHex(tx.Signature) {
+		return fmt.Errorf("signature must be %d canonical lowercase hex characters", 2*pqsig.SignatureSize)
+	}
+	return nil
 }
 
 // Verify validates the transaction signature and cryptographic address binding.
@@ -723,8 +783,10 @@ func (tx *Transaction) validateBasic() error {
 		return fmt.Errorf("unsupported signature algorithm: 0x%02x (expected ML-DSA-65 0x01)", tx.SigAlg)
 	}
 
+	strictLower := GetActiveNetwork().IsMainnet
+
 	// 1. Verify SenderPub is exactly 2 * PublicKeySize hex chars (1,952 bytes = 3,904 hex chars)
-	if len(tx.SenderPub) != 2*pqsig.PublicKeySize || !isHex(tx.SenderPub) {
+	if len(tx.SenderPub) != 2*pqsig.PublicKeySize || !isHex(tx.SenderPub) || (strictLower && !isLowerHex(tx.SenderPub)) {
 		return fmt.Errorf("sender public key hex length must be exactly %d, got %d", 2*pqsig.PublicKeySize, len(tx.SenderPub))
 	}
 	pubKeyBytes, err := hex.DecodeString(tx.SenderPub)
@@ -738,7 +800,7 @@ func (tx *Transaction) validateBasic() error {
 	}
 
 	// 2. Verify Signature is exactly 2 * SignatureSize hex chars (3,309 bytes = 6,618 hex chars)
-	if len(tx.Signature) != 2*pqsig.SignatureSize || !isHex(tx.Signature) {
+	if len(tx.Signature) != 2*pqsig.SignatureSize || !isHex(tx.Signature) || (strictLower && !isLowerHex(tx.Signature)) {
 		return fmt.Errorf("signature hex length must be exactly %d, got %d", 2*pqsig.SignatureSize, len(tx.Signature))
 	}
 	sigBytes, err := hex.DecodeString(tx.Signature)

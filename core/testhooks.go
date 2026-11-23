@@ -134,6 +134,7 @@ func LockNetworkForTesting(t testing.TB) {
 	ResetAntiStallActivationHeightOverride()
 	ResetASERTActivationHeightOverride()
 	ResetBlockBinarySizeActivationHeightOverride()
+	_ = SetCheckpointsForTesting(nil)
 	ResetASERTDriftCache()
 	t.Cleanup(func() {
 		ResetArmaxHashActivationHeightOverride()
@@ -143,6 +144,7 @@ func LockNetworkForTesting(t testing.TB) {
 		ResetAntiStallActivationHeightOverride()
 		ResetASERTActivationHeightOverride()
 		ResetBlockBinarySizeActivationHeightOverride()
+		_ = SetCheckpointsForTesting(nil)
 		ResetASERTDriftCache()
 		SetTargetOverrideForTesting(nil)
 		SetNetworkForTesting(true)
