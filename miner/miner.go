@@ -95,6 +95,60 @@ func clockOffsetFromTemplate(localNow, nodeCurTime int64) (offset int64, warning
 	return 0, ""
 }
 
+const (
+	maxStratumLineBytes = 64 * 1024
+	stratumReadTimeout  = 5 * time.Minute
+)
+
+func readBoundedStratumLine(reader *bufio.Reader, maxBytes int) (string, error) {
+	var buf []byte
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		buf = append(buf, chunk...)
+		if len(buf) > maxBytes {
+			return "", fmt.Errorf("stratum line exceeds maximum %d bytes", maxBytes)
+		}
+		if err == nil {
+			return string(buf), nil
+		}
+		if err != bufio.ErrBufferFull {
+			return "", err
+		}
+	}
+}
+
+func validateMinedBlockTemplate(tmpl *BlockTemplate) (*big.Int, error) {
+	if tmpl == nil {
+		return nil, errors.New("block template is nil")
+	}
+	if tmpl.Height < 0 {
+		return nil, fmt.Errorf("invalid negative block template height %d", tmpl.Height)
+	}
+	if strings.TrimSpace(tmpl.PreviousBlockHash) == "" {
+		return nil, errors.New("block template missing previousblockhash")
+	}
+	if tmpl.CoinbaseValue < 0 {
+		return nil, fmt.Errorf("invalid negative coinbase value %d", tmpl.CoinbaseValue)
+	}
+	trimmedTarget := strings.TrimSpace(tmpl.Target)
+	var targetInt *big.Int
+	if trimmedTarget != "" {
+		var ok bool
+		targetInt, ok = new(big.Int).SetString(trimmedTarget, 16)
+		if !ok {
+			return nil, fmt.Errorf("invalid hex target in block template: %q", tmpl.Target)
+		}
+	} else if tmpl.Difficulty >= 1 && !math.IsNaN(tmpl.Difficulty) && !math.IsInf(tmpl.Difficulty, 0) {
+		targetInt = core.DifficultyToTarget(int(tmpl.Difficulty))
+	} else {
+		return nil, errors.New("block template missing valid target")
+	}
+	if targetInt == nil || targetInt.Sign() <= 0 || targetInt.Cmp(core.MaxTarget256) > 0 {
+		return nil, errors.New("block template target out of valid 256-bit range")
+	}
+	return targetInt, nil
+}
+
 // futureLimitSafetyMargin keeps a miner-side buffer under the consensus future-timestamp limit so
 // clock drift between template and submission does not get a solved block rejected.
 const futureLimitSafetyMargin = 30
@@ -391,7 +445,7 @@ func main() {
 			os.Exit(1)
 		}
 		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		var info map[string]interface{}
 		_ = json.Unmarshal(body, &info)
 		fmt.Println("==================================================")
@@ -474,7 +528,7 @@ func main() {
 			os.Exit(1)
 		}
 		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 		var txs []core.Transaction
 		if json.Unmarshal(body, &txs) != nil {
 			var mp struct {
@@ -591,10 +645,22 @@ func main() {
 			continue
 		}
 
-		// 2. Parse PoW target
-		targetInt, ok := new(big.Int).SetString(tmpl.Target, 16)
-		if !ok || targetInt == nil || targetInt.Sign() <= 0 {
-			targetInt = core.DifficultyToTarget(int(tmpl.Difficulty))
+		// 2. Validate template & parse PoW target [MEDIUM-T4-05]
+		targetInt, tmplErr := validateMinedBlockTemplate(tmpl)
+		if tmplErr != nil {
+			fmt.Printf("[-] Rejecting malformed block template from %s: %v\n", activeDaemon, tmplErr)
+			waitDur := 3 * time.Second
+			if len(parsedDaemons) > 1 {
+				currentDaemonIdx = (currentDaemonIdx + 1) % len(parsedDaemons)
+				waitDur = 1 * time.Second
+			}
+			select {
+			case <-stopChan:
+				fmt.Println("\n[!] Miner shutdown requested. Stopping cleanly...")
+				return
+			case <-time.After(waitDur):
+			}
+			continue
 		}
 
 		// 3. Assemble Coinbase transaction with reward + fees [C-26]
@@ -906,7 +972,7 @@ func fetchBlockTemplate(client *http.Client, daemonURL, key, user, pass string) 
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	var tmpl BlockTemplate
-	if err := json.NewDecoder(resp.Body).Decode(&tmpl); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&tmpl); err != nil {
 		return nil, err
 	}
 	return &tmpl, nil
@@ -936,7 +1002,7 @@ func submitSolvedBlock(client *http.Client, daemonURL string, block core.Block, 
 	defer resp.Body.Close()
 
 	var res SubmitBlockResponse
-	_ = json.NewDecoder(resp.Body).Decode(&res)
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&res)
 	if resp.StatusCode != http.StatusOK {
 		if res.Message != "" {
 			return &res, fmt.Errorf("%s (HTTP %d)", res.Message, resp.StatusCode)
@@ -1046,7 +1112,7 @@ func runRemoteMiningLoop(stopChan chan os.Signal, parsedDaemons []string, minerA
 		}
 
 		var result MineResponse
-		_ = json.NewDecoder(resp.Body).Decode(&result)
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result)
 		resp.Body.Close()
 
 		if loopCtx.Err() != nil {
@@ -1297,7 +1363,7 @@ func splitMinerWorker(input string) (string, string) {
 
 // floatDifficultyToTarget converts a floating-point Stratum share difficulty into a 256-bit PoW target ceiling.
 func floatDifficultyToTarget(diff float64) *big.Int {
-	if diff <= 0 {
+	if math.IsNaN(diff) || math.IsInf(diff, 0) || diff <= 0 {
 		diff = 0.001
 	}
 	diff1Target := core.DifficultyToTarget(1)
@@ -1329,8 +1395,13 @@ func parseStratumNotify(params []interface{}) (*StratumJob, error) {
 	targetHex, _ := params[4].(string)
 	ntimeStr, _ := params[5].(string)
 
-	if jobID == "" || merkleRoot == "" || poolAddr == "" || targetHex == "" {
+	if jobID == "" || strings.TrimSpace(prevHash) == "" || merkleRoot == "" || poolAddr == "" || targetHex == "" {
 		return nil, errors.New("work notification contains empty mandatory fields")
+	}
+
+	targetInt, ok := new(big.Int).SetString(strings.TrimSpace(targetHex), 16)
+	if !ok || targetInt == nil || targetInt.Sign() <= 0 || targetInt.Cmp(core.MaxTarget256) > 0 {
+		return nil, fmt.Errorf("work notification has out-of-range target %q", targetHex)
 	}
 
 	var timestamp int64
@@ -1364,6 +1435,9 @@ func parseStratumNotify(params []interface{}) (*StratumJob, error) {
 		case string:
 			height, _ = strconv.Atoi(v)
 		}
+	}
+	if height < 0 {
+		return nil, fmt.Errorf("work notification contains negative height %d", height)
 	}
 
 	powAlgo := ""
@@ -1530,7 +1604,7 @@ func testStratumPoolConnection(poolHostPort, minerAddress, workerName, password 
 
 	readResponseByID := func(expectedID int) (*StratumMessage, error) {
 		for {
-			line, err := reader.ReadString('\n')
+			line, err := readBoundedStratumLine(reader, maxStratumLineBytes)
 			if err != nil {
 				return nil, err
 			}
@@ -1760,8 +1834,9 @@ func runStratumMiningSession(stopChan <-chan os.Signal, poolHostPort, minerAddre
 		stateMu.Unlock()
 		curDiff := targetSnapshot.Load().diff
 
-		seqOffset := (atomic.AddInt64(&jobSeq, 1) - 1) << 20
-		baseNonce := deriveSessionNonceBase(en1) + seqOffset
+		const maxSafeStratumNonceMask int64 = (1 << 52) - 1
+		seqOffset := ((atomic.AddInt64(&jobSeq, 1) - 1) & 0xfff) << 20
+		baseNonce := (deriveSessionNonceBase(en1) + seqOffset) & maxSafeStratumNonceMask
 		fmt.Printf("[%s] [Stratum Job] Height #%d (%s) | Job: %s | Pool Diff: %.4f\n",
 			time.Now().Format("15:04:05"), job.Height, job.PoWAlgo, job.JobID, curDiff)
 
@@ -1886,7 +1961,8 @@ func runStratumMiningSession(stopChan <-chan os.Signal, poolHostPort, minerAddre
 
 	reader := bufio.NewReader(conn)
 	for {
-		line, err := reader.ReadString('\n')
+		_ = conn.SetReadDeadline(time.Now().Add(stratumReadTimeout))
+		line, err := readBoundedStratumLine(reader, maxStratumLineBytes)
 		if err != nil {
 			if sessionCtx.Err() != nil {
 				return nil
@@ -1924,7 +2000,9 @@ func runStratumMiningSession(stopChan <-chan os.Signal, poolHostPort, minerAddre
 				}
 			case stratumRPCMethod("notify"):
 				job, err := parseStratumNotify(msg.Params)
-				if err == nil && job != nil {
+				if err != nil {
+					fmt.Printf("[%s] [!] Ignoring malformed Stratum notify payload: %v\n", time.Now().Format("15:04:05"), err)
+				} else if job != nil {
 					startJobWorkers(job)
 				}
 			}

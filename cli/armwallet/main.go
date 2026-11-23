@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,8 +46,8 @@ func main() {
 	walletPtr := flag.String("wallet", "", "Wallet keystore file path (deprecated alias for -file)")
 	forcePtr := flag.Bool("force", false, "Force overwrite existing wallet file without creating backup [T15]")
 	daemonPtr := flag.String("daemon", "", "RPC daemon URL for balance queries (default: profile port)")
-	rpcUserPtr := flag.String("rpcuser", "", "Username for RPC authentication")
-	rpcPasswordPtr := flag.String("rpcpassword", "", "Password for RPC authentication")
+	rpcUserPtr := flag.String("rpcuser", os.Getenv("ARMX_RPC_USER"), "Username for RPC authentication (or ARMX_RPC_USER)")
+	rpcPasswordPtr := flag.String("rpcpassword", os.Getenv("ARMX_RPC_PASSWORD"), "Password for RPC authentication (prefer ARMX_RPC_PASSWORD env var)")
 	portPtr := flag.String("port", "", "RPC Daemon port (deprecated: use -rpcport)")
 	rpcPortPtr := flag.String("rpcport", "", "RPC Daemon port (overrides default)")
 	p2pPortPtr := flag.String("p2p", "", "P2P port (deprecated: use -p2pport)")
@@ -90,6 +91,9 @@ func main() {
 	flag.Visit(func(f *flag.Flag) {
 		if repl, ok := legacyAliases[f.Name]; ok {
 			fmt.Fprintf(os.Stderr, "[!] Warning: -%s is a deprecated alias, please use -%s instead\n", f.Name, repl)
+		}
+		if f.Name == "rpcpassword" {
+			fmt.Fprintln(os.Stderr, "[!] Warning: passing -rpcpassword via CLI flag exposes secrets in process lists; prefer ARMX_RPC_PASSWORD env var.")
 		}
 	})
 
@@ -380,8 +384,31 @@ func validateKeystoreMetadata(ks *wallet.KeystoreFile) error {
 	return nil
 }
 
+func readBoundedKeystoreFile(filePath string) ([]byte, error) {
+	fi, err := os.Stat(filePath)
+	if err != nil {
+		return nil, err
+	}
+	if fi.Size() > wallet.MaxKeystoreFileSize {
+		return nil, fmt.Errorf("keystore file size (%d bytes) exceeds maximum allowable limit (%d bytes)", fi.Size(), wallet.MaxKeystoreFileSize)
+	}
+	f, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, wallet.MaxKeystoreFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > wallet.MaxKeystoreFileSize {
+		return nil, fmt.Errorf("keystore file exceeds maximum limit (%d bytes)", wallet.MaxKeystoreFileSize)
+	}
+	return data, nil
+}
+
 func showAddresses(filePath string) {
-	data, err := os.ReadFile(filePath)
+	data, err := readBoundedKeystoreFile(filePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[-] Cannot read keystore file '%s': %v\n", filePath, err)
 		os.Exit(1)
@@ -409,7 +436,7 @@ func showAddresses(filePath string) {
 }
 
 func backupWallet(sourcePath, destPath string) {
-	data, err := os.ReadFile(sourcePath)
+	data, err := readBoundedKeystoreFile(sourcePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[-] Failed to read wallet keystore '%s': %v\n", sourcePath, err)
 		os.Exit(1)
@@ -512,14 +539,14 @@ func walletCheck(filePath string) {
 func showTransaction(txid string, daemonURL string, httpGet func(string) (*http.Response, error)) {
 	cleanTxid := strings.TrimSpace(txid)
 	fmt.Printf("[~] Querying transaction %s from daemon %s...\n", cleanTxid, daemonURL)
-	resp, err := httpGet(fmt.Sprintf("%s/tx?hash=%s", daemonURL, cleanTxid))
+	resp, err := httpGet(fmt.Sprintf("%s/tx?hash=%s", daemonURL, url.QueryEscape(cleanTxid)))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[-] Failed to connect to daemon: %v\n", err)
 		os.Exit(1)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil || resp.StatusCode != http.StatusOK {
 		fmt.Fprintf(os.Stderr, "[-] Transaction '%s' not found (HTTP %d)\n", cleanTxid, resp.StatusCode)
 		os.Exit(1)
@@ -554,7 +581,7 @@ func showTransaction(txid string, daemonURL string, httpGet func(string) (*http.
 }
 
 func rescanWallet(filePath string, daemonURL string, httpGet func(string) (*http.Response, error)) {
-	data, err := os.ReadFile(filePath)
+	data, err := readBoundedKeystoreFile(filePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[-] Cannot read keystore file '%s': %v\n", filePath, err)
 		os.Exit(1)
@@ -566,14 +593,14 @@ func rescanWallet(filePath string, daemonURL string, httpGet func(string) (*http
 	}
 
 	fmt.Printf("[~] Rescanning transactions for wallet address: %s...\n", ks.Address)
-	resp, err := httpGet(fmt.Sprintf("%s/history?address=%s", daemonURL, ks.Address))
+	resp, err := httpGet(fmt.Sprintf("%s/history?address=%s", daemonURL, url.QueryEscape(ks.Address)))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[-] Failed to query transaction history: %v\n", err)
 		os.Exit(1)
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	type txHistoryRecord struct {
 		BlockIndex int              `json:"block_index"`
 		Timestamp  int64            `json:"timestamp"`
@@ -620,14 +647,14 @@ func rescanWallet(filePath string, daemonURL string, httpGet func(string) (*http
 
 func checkBalance(address string, daemonURL string, httpGet func(string) (*http.Response, error)) {
 	fmt.Printf("[~] Connecting to daemon %s for address: %s...\n", daemonURL, address)
-	resp, err := httpGet(daemonURL + "/balance?address=" + address)
+	resp, err := httpGet(daemonURL + "/balance?address=" + url.QueryEscape(address))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "[-] Failed to connect to daemon (ensure armcoind is running):", err)
 		os.Exit(1)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "[-] Failed to read daemon response:", err)
 		os.Exit(1)
@@ -681,7 +708,7 @@ func showMempool(daemonURL string, httpGet func(string) (*http.Response, error))
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil || resp.StatusCode != http.StatusOK {
 		fmt.Fprintf(os.Stderr, "[-] Failed to retrieve mempool from daemon (HTTP %d)\n", resp.StatusCode)
 		os.Exit(1)

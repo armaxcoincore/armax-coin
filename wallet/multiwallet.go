@@ -124,7 +124,7 @@ func (wm *WalletManager) syncLegacyDefaultLocked() {
 		return
 	}
 
-	ksData, err := os.ReadFile(ioLimitPath(legacyPath))
+	ksData, err := readBoundedFile(legacyPath, MaxKeystoreFileSize)
 	if err != nil {
 		wm.ensureValidActiveLocked()
 		return
@@ -167,10 +167,6 @@ func (wm *WalletManager) syncLegacyDefaultLocked() {
 		_ = wm.saveLocked()
 	}
 	wm.ensureValidActiveLocked()
-}
-
-func ioLimitPath(path string) string {
-	return path
 }
 
 func (wm *WalletManager) ensureValidActiveLocked() {
@@ -415,6 +411,7 @@ func (wm *WalletManager) Create(label, passphrase string) (ManagedWalletEntry, *
 	wm.index.Wallets = append(wm.index.Wallets, entry)
 	wm.index.ActiveID = entry.ID
 	if err := wm.saveLocked(); err != nil {
+		w.Zeroize()
 		return ManagedWalletEntry{}, nil, "", err
 	}
 	w.ClearMnemonic()
@@ -470,6 +467,7 @@ func (wm *WalletManager) Restore(label, mnemonic, passphrase string) (ManagedWal
 	wm.index.Wallets = append(wm.index.Wallets, entry)
 	wm.index.ActiveID = entry.ID
 	if err := wm.saveLocked(); err != nil {
+		restored.Zeroize()
 		return ManagedWalletEntry{}, nil, err
 	}
 	restored.ClearMnemonic()
@@ -485,17 +483,38 @@ func (wm *WalletManager) ImportKeystoreJSON(label string, rawJSON []byte) (Manag
 	if err := json.Unmarshal(rawJSON, &ks); err != nil {
 		return ManagedWalletEntry{}, fmt.Errorf("invalid keystore JSON: %w", err)
 	}
-	if ks.Version <= 0 {
-		return ManagedWalletEntry{}, errors.New("unsupported keystore version")
+	if ks.Version != KeystoreVersion {
+		return ManagedWalletEntry{}, fmt.Errorf("unsupported keystore version %d (expected %d)", ks.Version, KeystoreVersion)
 	}
 	if !core.ValidateAddress(ks.Address) {
 		return ManagedWalletEntry{}, errors.New("keystore contains invalid Armaxcoin address")
+	}
+	if pubHex := strings.TrimSpace(ks.PublicKey); pubHex != "" {
+		derivedAddr, err := AddressFromPubKeyHex(pubHex)
+		if err != nil || !core.MatchAddress(ks.Address, derivedAddr) {
+			return ManagedWalletEntry{}, errors.New("keystore public key does not match stored address")
+		}
+	}
+	if ks.Crypto.Cipher != "aes-256-gcm" || ks.Crypto.KDF != "argon2id" {
+		return ManagedWalletEntry{}, fmt.Errorf("unsupported keystore crypto suite: %s/%s", ks.Crypto.KDF, ks.Crypto.Cipher)
 	}
 	if strings.TrimSpace(ks.Crypto.Ciphertext) == "" || strings.TrimSpace(ks.Crypto.Nonce) == "" || strings.TrimSpace(ks.Crypto.KDFParams.Salt) == "" {
 		return ManagedWalletEntry{}, errors.New("keystore missing cryptographic fields")
 	}
 	if err := ValidateKDFParameters(ks.Crypto.KDFParams); err != nil {
 		return ManagedWalletEntry{}, fmt.Errorf("invalid keystore KDF parameters: %w", err)
+	}
+	salt, err := hex.DecodeString(ks.Crypto.KDFParams.Salt)
+	if err != nil || len(salt) != StandardSaltLen {
+		return ManagedWalletEntry{}, errors.New("keystore contains invalid salt")
+	}
+	nonce, err := hex.DecodeString(ks.Crypto.Nonce)
+	if err != nil || len(nonce) != StandardNonceLen {
+		return ManagedWalletEntry{}, errors.New("keystore contains invalid nonce")
+	}
+	ciphertext, err := hex.DecodeString(ks.Crypto.Ciphertext)
+	if err != nil || len(ciphertext) < MinCiphertextLen || len(ciphertext) > MaxCiphertextLen {
+		return ManagedWalletEntry{}, errors.New("keystore contains invalid ciphertext length or encoding")
 	}
 
 	wm.mu.Lock()
@@ -515,10 +534,9 @@ func (wm *WalletManager) ImportKeystoreJSON(label string, rawJSON []byte) (Manag
 	if err != nil {
 		return ManagedWalletEntry{}, err
 	}
-	if err := os.WriteFile(absPath, rawJSON, 0600); err != nil {
+	if err := writeFileAtomic0600(absPath, rawJSON, "wallet-import-*.tmp"); err != nil {
 		return ManagedWalletEntry{}, err
 	}
-	_ = os.Chmod(absPath, 0600)
 
 	entry := ManagedWalletEntry{
 		ID:        id,

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"strings"
+
 	"github.com/armaxcoincore/armax-coin/core"
 	"github.com/armaxcoincore/armax-coin/wallet"
 )
@@ -28,11 +30,26 @@ func roundUpFeeStep(val, step int64) int64 {
 	return ((val + step - 1) / step) * step
 }
 
-// ComputeGUIFeeEstimate calculates guaranteed-valid Economy/Standard/Priority fees using
-// core.MinRelayFee (1,000 Armoids/KB) and wallet.EstimateMinMempoolFee for ML-DSA-65 tx sizes.
-func ComputeGUIFeeEstimate(w *wallet.Wallet, recipient string, amount int64, mempoolCount int, netID string) FeeEstimateResponse {
-	minFee := wallet.EstimateMinMempoolFee(w, recipient, amount, 0)
+func isBinarySizeActiveForNetwork(netID string, nextBlockHeight int) bool {
+	trimmed := strings.TrimSpace(netID)
+	if trimmed == "" || strings.EqualFold(trimmed, core.GetActiveNetwork().NetworkID) {
+		return core.IsMempoolBinaryFeeActive(nextBlockHeight)
+	}
+	if prof, ok := core.ProfileForNetworkID(trimmed); ok {
+		return prof.MempoolBinaryFeeActivationHeight >= 0 && int64(nextBlockHeight) >= prof.MempoolBinaryFeeActivationHeight
+	}
+	return core.IsMempoolBinaryFeeActive(nextBlockHeight)
+}
+
+// ComputeGUIFeeEstimateAtHeight calculates guaranteed-valid Economy/Standard/Priority fees
+// for nextBlockHeight using canonical TxBinaryV1 weight when active or legacy JSON size prior to activation [HIGH-T4-02].
+func ComputeGUIFeeEstimateAtHeight(w *wallet.Wallet, recipient string, amount int64, mempoolCount int, netID string, nextBlockHeight int) FeeEstimateResponse {
+	binaryActive := isBinarySizeActiveForNetwork(netID, nextBlockHeight)
 	estBytes := 10800
+	if binaryActive {
+		estBytes = 5320
+	}
+	minFee := core.CalculateMinMempoolFee(estBytes)
 
 	if w != nil && w.PrivateKey != nil {
 		dummy := core.Transaction{
@@ -44,9 +61,24 @@ func ComputeGUIFeeEstimate(w *wallet.Wallet, recipient string, amount int64, mem
 			Nonce:     0,
 		}
 		if dummy.Sign(w.PrivateKey) == nil {
-			estBytes = dummy.Size()
-			if exactMin := core.CalculateMinMempoolFee(estBytes); exactMin > minFee {
-				minFee = exactMin
+			if binaryActive {
+				if binSz := dummy.BinarySize(); binSz > 0 {
+					estBytes = binSz
+				} else {
+					estBytes = dummy.Size()
+				}
+			} else {
+				estBytes = dummy.Size()
+			}
+			minFee = core.CalculateMinMempoolFee(estBytes)
+			if !binaryActive && dummy.Fee != minFee {
+				dummy.Fee = minFee
+				if dummy.Sign(w.PrivateKey) == nil {
+					estBytes = dummy.Size()
+					if exactMin := core.CalculateMinMempoolFee(estBytes); exactMin > minFee {
+						minFee = exactMin
+					}
+				}
 			}
 		}
 	}
@@ -84,4 +116,10 @@ func ComputeGUIFeeEstimate(w *wallet.Wallet, recipient string, amount int64, mem
 		MempoolTxCount:    mempoolCount,
 		Ticker:            core.TickerForNetworkID(netID),
 	}
+}
+
+// ComputeGUIFeeEstimate calculates guaranteed-valid Economy/Standard/Priority fees using
+// core.MinRelayFee (1,000 Armoids/KB) and height-0 network rules.
+func ComputeGUIFeeEstimate(w *wallet.Wallet, recipient string, amount int64, mempoolCount int, netID string) FeeEstimateResponse {
+	return ComputeGUIFeeEstimateAtHeight(w, recipient, amount, mempoolCount, netID, 0)
 }

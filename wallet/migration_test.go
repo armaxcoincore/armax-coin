@@ -94,6 +94,7 @@ func TestAutoFeeMempoolAcceptance(t *testing.T) {
 	// Initialize in-memory blockchain
 	core.SetNetworkForTesting(true)
 	defer core.SetNetworkForTesting(true)
+	defer func() { _ = core.SetNetwork("testnet") }()
 	_ = core.SetNetwork("mainnet")
 
 	bc := core.NewBlockchain(1)

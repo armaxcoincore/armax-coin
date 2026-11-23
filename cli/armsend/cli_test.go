@@ -332,3 +332,83 @@ func TestAF05_ArmsendPreSignValidationAndBroadcastFlow(t *testing.T) {
 		t.Fatalf("broadcasted transaction failed ML-DSA-65 verification: %v", err)
 	}
 }
+
+// TestArmsendBinaryFeeHeightPreSignBalanceCheck verifies REV-T4-02:
+// armsend queries /stats for nextHeight BEFORE the pre-sign spendable balance check, so when
+// MempoolBinaryFeeActivationHeight is active at nextHeight (6,000 Armoids) while height 0 is
+// JSON-weighted (11,000 Armoids), a balance sufficient for binary fee is not falsely rejected.
+func TestArmsendBinaryFeeHeightPreSignBalanceCheck(t *testing.T) {
+	tempDir := t.TempDir()
+	walletPath := filepath.Join(tempDir, "test_wallet_binfee.json")
+	passphrase := "DisposableTestPass#2026"
+
+	senderWallet, err := wallet.NewWallet()
+	if err != nil {
+		t.Fatalf("NewWallet sender failed: %v", err)
+	}
+	defer senderWallet.Zeroize()
+
+	recipientWallet, err := wallet.NewWallet()
+	if err != nil {
+		t.Fatalf("NewWallet recipient failed: %v", err)
+	}
+	defer recipientWallet.Zeroize()
+
+	if err := wallet.EncryptAndSaveKeystore(senderWallet, passphrase, walletPath); err != nil {
+		t.Fatalf("EncryptAndSaveKeystore failed: %v", err)
+	}
+
+	const sendAmount int64 = 1 * core.CoinUnit
+	const exactBinaryBalance int64 = sendAmount + 6000 // < sendAmount + 11000
+
+	var broadcastCalls atomic.Int32
+	var lastTx core.Transaction
+	var mu sync.Mutex
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Network-ID", "ARMX-REGTEST-1")
+		switch r.URL.Path {
+		case "/stats":
+			_, _ = w.Write([]byte(`{"height":10,"blocks":11,"network_id":"ARMX-REGTEST-1"}`))
+		case "/balance":
+			_, _ = fmt.Fprintf(w, `{"address":%q,"balance":%d,"pending_balance":%d,"spendable_balance":%d,"nonce":0,"pending_nonce":0,"next_nonce":1}`,
+				senderWallet.Address, exactBinaryBalance, exactBinaryBalance, exactBinaryBalance)
+		case "/tx/new":
+			broadcastCalls.Add(1)
+			raw, _ := io.ReadAll(r.Body)
+			mu.Lock()
+			_ = json.Unmarshal(raw, &lastTx)
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"accepted"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	env := []string{
+		"ARMX_WALLET_PASSPHRASE=" + passphrase,
+		"ARMX_MEMPOOL_BINARY_FEE_HEIGHT=10",
+	}
+	out, code := runArmsendWithEnv(t, env,
+		"-network", "regtest",
+		"-daemon", srv.URL,
+		"-wallet", walletPath,
+		"-to", recipientWallet.Address,
+		"-amount", "1.0",
+	)
+	if code != 0 {
+		t.Fatalf("expected armsend with exact binary-fee balance (%d) to succeed when /stats height=10, got code=%d out=%s", exactBinaryBalance, code, out)
+	}
+	if broadcastCalls.Load() != 1 {
+		t.Fatalf("expected 1 /tx/new broadcast, got %d", broadcastCalls.Load())
+	}
+	mu.Lock()
+	tx := lastTx
+	mu.Unlock()
+	if tx.Fee != 6000 {
+		t.Fatalf("expected broadcasted tx fee = 6000 Armoids, got %d", tx.Fee)
+	}
+}

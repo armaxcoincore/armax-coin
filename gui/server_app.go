@@ -784,7 +784,10 @@ func runGUIServerMain() {
 	}
 	fmt.Println("=================================================================")
 
-	srv := &http.Server{Handler: handler}
+	srv := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 	serveDone := make(chan error, 1)
 	go func() {
 		serveDone <- srv.Serve(listener)
@@ -1012,8 +1015,6 @@ func isStartupAllowedAPI(path string) bool {
 		"/api/node/status",
 		"/api/node/retry",
 		"/api/wallets/unlock",
-		"/api/wallet/create",
-		"/api/wallet/restore",
 		"/api/app/exit":
 		return true
 	default:
@@ -1080,7 +1081,7 @@ func handleAssetFaviconICO(w http.ResponseWriter, r *http.Request) {
 func handleQRCode(w http.ResponseWriter, r *http.Request) {
 	content := strings.TrimSpace(r.URL.Query().Get("content"))
 	if content == "" {
-		content = activeAddress
+		_, content = getActiveWalletMeta()
 	}
 	if content == "" || len(content) > 512 {
 		http.Error(w, "Invalid QR content", http.StatusBadRequest)
@@ -1125,6 +1126,20 @@ func closeHistoryStore() {
 		_ = historyStore.Close()
 		historyStore = nil
 	}
+}
+
+func getActiveWalletMeta() (string, string) {
+	unlockedMu.RLock()
+	defer unlockedMu.RUnlock()
+	return activeWalletID, activeAddress
+}
+
+func currentNextBlockHeightForFee() int {
+	tip := atomic.LoadInt64(&lastTipHeight)
+	if tip > 0 {
+		return int(tip) + 1
+	}
+	return 0
 }
 
 func touchWalletActivity() {
@@ -1185,9 +1200,11 @@ func findAddressBookPath() string {
 func loadOrInitWallet() {
 	wm := ensureWalletManager()
 	if activeEntry, ok := wm.Active(); ok {
+		unlockedMu.Lock()
 		activeWalletID = activeEntry.ID
 		activeAddress = activeEntry.Address
 		activeWallet = nil
+		unlockedMu.Unlock()
 
 		if envPass := os.Getenv("ARMX_WALLET_PASSPHRASE"); envPass != "" {
 			if w, err := wm.DecryptWallet(activeEntry.ID, envPass); err == nil {
@@ -1264,17 +1281,18 @@ func handleAppExit(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleWalletInfo(w http.ResponseWriter, r *http.Request) {
+	curID, curAddr := getActiveWalletMeta()
 	label := ""
-	if activeWalletID != "" {
+	if curID != "" {
 		if wm := ensureWalletManager(); wm != nil {
-			if entry, ok := wm.Active(); ok && entry.ID == activeWalletID {
+			if entry, ok := wm.Active(); ok && entry.ID == curID {
 				label = entry.Label
 			}
 		}
 	}
 
 	startupLocked := startupAuthRequired.Load() && !startupAuthenticated.Load()
-	exposedAddr := activeAddress
+	exposedAddr := curAddr
 	if startupLocked {
 		// Do not leak wallet address until the startup passphrase has been verified
 		exposedAddr = ""
@@ -1285,11 +1303,11 @@ func handleWalletInfo(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"address":             exposedAddr,
 		"wallet_path":         findWalletPath(),
-		"initialized":         activeAddress != "",
+		"initialized":         curAddr != "",
 		"startup_locked":      startupLocked,
 		"locked":              !isUnlocked,
 		"unlocked":            isUnlocked,
-		"active_wallet_id":    activeWalletID,
+		"active_wallet_id":    curID,
 		"active_wallet_label": label,
 		"version":             core.Version,
 		"network":             core.ActiveNetwork.NetworkID,
@@ -1303,6 +1321,7 @@ func handleWalletCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req struct {
 		Label      string `json:"label"`
 		Passphrase string `json:"passphrase"`
@@ -1341,7 +1360,7 @@ func handleWalletCreate(w http.ResponseWriter, r *http.Request) {
 		"status":   "success",
 		"id":       entry.ID,
 		"label":    entry.Label,
-		"address":  activeAddress,
+		"address":  entry.Address,
 		"mnemonic": mnemonic,
 	})
 	newW.ClearMnemonic()
@@ -1353,6 +1372,7 @@ func handleWalletRestore(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req struct {
 		Label      string `json:"label"`
 		Mnemonic   string `json:"mnemonic"`
@@ -1398,7 +1418,7 @@ func handleWalletRestore(w http.ResponseWriter, r *http.Request) {
 		"status":  "success",
 		"id":      entry.ID,
 		"label":   entry.Label,
-		"address": activeAddress,
+		"address": entry.Address,
 	})
 }
 
@@ -1409,10 +1429,7 @@ func handleWalletsList(w http.ResponseWriter, r *http.Request) {
 	}
 	wm := ensureWalletManager()
 	list := wm.List()
-	if activeEntry, ok := wm.Active(); ok && activeWalletID == "" {
-		activeWalletID = activeEntry.ID
-		activeAddress = activeEntry.Address
-	}
+	activeEntry, hasActiveEntry := wm.Active()
 
 	type walletDTO struct {
 		ID        string `json:"id"`
@@ -1424,7 +1441,13 @@ func handleWalletsList(w http.ResponseWriter, r *http.Request) {
 		Unlocked  bool   `json:"unlocked"`
 	}
 
-	unlockedMu.RLock()
+	unlockedMu.Lock()
+	if hasActiveEntry && activeWalletID == "" {
+		activeWalletID = activeEntry.ID
+		activeAddress = activeEntry.Address
+	}
+	curID := activeWalletID
+	curAddr := activeAddress
 	mins := autoLockMinutes
 	out := make([]walletDTO, 0, len(list))
 	for _, e := range list {
@@ -1436,16 +1459,16 @@ func handleWalletsList(w http.ResponseWriter, r *http.Request) {
 			Address:   e.Address,
 			FilePath:  e.FilePath,
 			CreatedAt: e.CreatedAt,
-			IsActive:  e.ID == activeWalletID,
+			IsActive:  e.ID == curID,
 			Unlocked:  isUnl,
 		})
 	}
-	unlockedMu.RUnlock()
+	unlockedMu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"active_id":         activeWalletID,
-		"active_address":    activeAddress,
+		"active_id":         curID,
+		"active_address":    curAddr,
 		"auto_lock_minutes": mins,
 		"wallets":           out,
 	})
@@ -1456,6 +1479,7 @@ func handleWalletsSelect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req struct {
 		ID string `json:"id"`
 	}
@@ -1473,6 +1497,7 @@ func handleWalletsSelect(w http.ResponseWriter, r *http.Request) {
 	activeWalletID = entry.ID
 	activeAddress = entry.Address
 	activeWallet = unlockedWallets[entry.ID]
+	isUnlocked := activeWallet != nil && activeWallet.PrivateKey != nil
 	unlockedMu.Unlock()
 	touchWalletActivity()
 
@@ -1482,7 +1507,7 @@ func handleWalletsSelect(w http.ResponseWriter, r *http.Request) {
 		"id":       entry.ID,
 		"label":    entry.Label,
 		"address":  entry.Address,
-		"unlocked": activeWallet != nil && activeWallet.PrivateKey != nil,
+		"unlocked": isUnlocked,
 	})
 }
 
@@ -1542,6 +1567,7 @@ func handleWalletsRename(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req struct {
 		ID    string `json:"id"`
 		Label string `json:"label"`
@@ -1571,7 +1597,7 @@ func handleWalletsBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	id := strings.TrimSpace(r.URL.Query().Get("id"))
 	if id == "" {
-		id = activeWalletID
+		id, _ = getActiveWalletMeta()
 	}
 	wm := ensureWalletManager()
 	var path string
@@ -1604,6 +1630,7 @@ func handleWalletsUnlock(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req struct {
 		ID         string `json:"id"`
 		Passphrase string `json:"passphrase"`
@@ -1614,7 +1641,7 @@ func handleWalletsUnlock(w http.ResponseWriter, r *http.Request) {
 	}
 	id := strings.TrimSpace(req.ID)
 	if id == "" {
-		id = activeWalletID
+		id, _ = getActiveWalletMeta()
 	}
 	wm := ensureWalletManager()
 	decW, err := wm.DecryptWallet(id, req.Passphrase)
@@ -1656,6 +1683,7 @@ func handleWalletsAutoLock(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req struct {
 		Minutes int `json:"minutes"`
 	}
@@ -1695,7 +1723,7 @@ func handleCLI(w http.ResponseWriter, r *http.Request) {
 		path = "/peers"
 	case "getbalance":
 		if arg == "" {
-			arg = activeAddress
+			_, arg = getActiveWalletMeta()
 		}
 		if !core.ValidateAddress(arg) {
 			http.Error(w, "Invalid address. Use getbalance [armx1... address]", http.StatusBadRequest)
@@ -1704,7 +1732,7 @@ func handleCLI(w http.ResponseWriter, r *http.Request) {
 		path = "/balance?address=" + url.QueryEscape(arg)
 	case "gethistory":
 		if arg == "" {
-			arg = activeAddress
+			_, arg = getActiveWalletMeta()
 		}
 		if !core.ValidateAddress(arg) {
 			http.Error(w, "Invalid address. Use gethistory [armx1... address]", http.StatusBadRequest)
@@ -2091,7 +2119,7 @@ func handleBalance(w http.ResponseWriter, r *http.Request) {
 	}
 	addr := r.URL.Query().Get("address")
 	if addr == "" {
-		addr = activeAddress
+		_, addr = getActiveWalletMeta()
 	}
 	client := http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Get(fmt.Sprintf("%s/balance?address=%s", rpcURL, url.QueryEscape(addr)))
@@ -2116,12 +2144,13 @@ func handleFeeEstimate(w http.ResponseWriter, r *http.Request) {
 			amtArmoids = parsed
 		}
 	}
-	est := ComputeGUIFeeEstimate(
+	est := ComputeGUIFeeEstimateAtHeight(
 		getActiveUnlockedWalletSnapshot(),
 		recipient,
 		amtArmoids,
 		int(atomic.LoadInt64(&lastMempoolSize)),
 		core.ActiveNetwork.NetworkID,
+		currentNextBlockHeightForFee(),
 	)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(est)
@@ -2180,7 +2209,7 @@ func handleHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	addr := strings.TrimSpace(r.URL.Query().Get("address"))
 	if addr == "" {
-		addr = activeAddress
+		_, addr = getActiveWalletMeta()
 	}
 
 	pagedMode := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("format")), "paged")
@@ -2283,6 +2312,7 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req struct {
 		To         string `json:"to"`
 		Amount     string `json:"amount"`
@@ -2326,12 +2356,13 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	curID, _ := getActiveWalletMeta()
 	var signingWallet *wallet.Wallet
 	if req.Passphrase != "" {
 		var loadedW *wallet.Wallet
 		var err error
-		if activeWalletID != "" {
-			loadedW, err = ensureWalletManager().DecryptWallet(activeWalletID, req.Passphrase)
+		if curID != "" {
+			loadedW, err = ensureWalletManager().DecryptWallet(curID, req.Passphrase)
 		} else {
 			loadedW, err = wallet.DecryptAndLoadKeystore(req.Passphrase, findWalletPath())
 		}
@@ -2361,8 +2392,8 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Compute real minimum required fee from ML-DSA-65 tx size & core.MinRelayFee (1,000 Armoids/KB)
-	minFee := wallet.EstimateMinMempoolFee(signingWallet, to, amtArmoids, 0)
+	nextH := currentNextBlockHeightForFee()
+	minFee := wallet.EstimateMinMempoolFeeAtHeight(signingWallet, to, amtArmoids, 0, nextH)
 	if explicitFee && feeArmoids < minFee {
 		http.Error(w, fmt.Sprintf(
 			"Transaction fee %s is below minimum required network relay fee %s (core.MinRelayFee = %d Armoids/KB)",
@@ -2379,7 +2410,7 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := http.Client{Timeout: 5 * time.Second}
-	bResp, err := client.Get(fmt.Sprintf("%s/balance?address=%s", rpcURL, signingWallet.Address))
+	bResp, err := client.Get(fmt.Sprintf("%s/balance?address=%s", rpcURL, url.QueryEscape(signingWallet.Address)))
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to query nonce: %v", err), http.StatusBadGateway)
 		return
@@ -2397,23 +2428,24 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 		Balance          int64 `json:"balance"`
 		ConfirmedBalance int64 `json:"confirmed_balance"`
 		PendingBalance   int64 `json:"pending_balance"`
+		ImmatureBalance  int64 `json:"immature_balance"`
 		SpendableBalance int64 `json:"spendable_balance"`
 		PendingNonce     int64 `json:"pending_nonce"`
 		NextNonce        int64 `json:"next_nonce"`
 	}
-	if err := json.NewDecoder(bResp.Body).Decode(&bal); err != nil {
+	if err := json.NewDecoder(io.LimitReader(bResp.Body, 1<<20)).Decode(&bal); err != nil {
 		http.Error(w, fmt.Sprintf("Invalid balance response: %v", err), http.StatusBadGateway)
 		return
 	}
 	avail := bal.SpendableBalance
-	if avail == 0 {
+	if bal.ImmatureBalance == 0 && avail == 0 {
 		avail = bal.PendingBalance
-	}
-	if avail == 0 {
-		avail = bal.ConfirmedBalance
-	}
-	if avail == 0 {
-		avail = bal.Balance
+		if avail == 0 {
+			avail = bal.ConfirmedBalance
+		}
+		if avail == 0 {
+			avail = bal.Balance
+		}
 	}
 	if avail < amtArmoids+feeArmoids {
 		http.Error(w, "Insufficient balance", http.StatusBadRequest)
@@ -2439,6 +2471,30 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if exactMin := core.CalculateMinMempoolFee(core.FeeEffectiveTxSize(&tx, nextH)); feeArmoids < exactMin {
+		if explicitFee {
+			http.Error(w, fmt.Sprintf(
+				"Transaction fee %s is below minimum required network relay fee %s (core.MinRelayFee = %d Armoids/KB)",
+				core.FormatArmxDecimal(feeArmoids), core.FormatArmxDecimal(exactMin), core.MinRelayFee),
+				http.StatusBadRequest)
+			return
+		}
+		feeArmoids = exactMin
+		if amtArmoids > core.MaxSupply-feeArmoids {
+			http.Error(w, "Amount plus fee exceeds maximum supply", http.StatusBadRequest)
+			return
+		}
+		if avail < amtArmoids+feeArmoids {
+			http.Error(w, "Insufficient balance", http.StatusBadRequest)
+			return
+		}
+		tx.Fee = feeArmoids
+		if err := tx.Sign(signingWallet.PrivateKey); err != nil {
+			http.Error(w, fmt.Sprintf("Signature creation failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+
 	txData, _ := json.Marshal(tx)
 	postResp, err := client.Post(rpcURL+"/tx/new", "application/json", bytes.NewBuffer(txData))
 	if err != nil {
@@ -2446,7 +2502,7 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer postResp.Body.Close()
-	bodyBytes, _ := io.ReadAll(postResp.Body)
+	bodyBytes, _ := io.ReadAll(io.LimitReader(postResp.Body, 1<<20))
 
 	if postResp.StatusCode != 200 {
 		http.Error(w, string(bodyBytes), postResp.StatusCode)
@@ -2811,6 +2867,7 @@ func handleMineStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
 	var req struct {
 		Miner   string `json:"miner"`
@@ -2821,7 +2878,7 @@ func handleMineStart(w http.ResponseWriter, r *http.Request) {
 
 	minerAddr := strings.TrimSpace(req.Miner)
 	if minerAddr == "" {
-		minerAddr = activeAddress
+		_, minerAddr = getActiveWalletMeta()
 	}
 	if !core.ValidateAddress(minerAddr) {
 		writeMineErrorJSON(w, http.StatusBadRequest, "Invalid miner address")
@@ -2979,14 +3036,55 @@ func handleAddressBook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		var contacts []ContactEntry
 		if err := json.NewDecoder(r.Body).Decode(&contacts); err != nil {
 			http.Error(w, "Invalid JSON", http.StatusBadRequest)
 			return
 		}
 		data, _ := json.MarshalIndent(contacts, "", "  ")
-		_ = os.MkdirAll(filepath.Dir(bookFile), 0700)
-		_ = os.WriteFile(bookFile, data, 0600)
+		bookDir := filepath.Dir(bookFile)
+		if err := os.MkdirAll(bookDir, 0700); err != nil {
+			http.Error(w, "Failed to save address book", http.StatusInternalServerError)
+			return
+		}
+		tmpBook, err := os.CreateTemp(bookDir, "addressbook-*.tmp")
+		if err != nil {
+			http.Error(w, "Failed to save address book", http.StatusInternalServerError)
+			return
+		}
+		tmpBookPath := tmpBook.Name()
+		committed := false
+		defer func() {
+			if !committed {
+				_ = os.Remove(tmpBookPath)
+			}
+		}()
+		if err := os.Chmod(tmpBookPath, 0600); err != nil {
+			_ = tmpBook.Close()
+			http.Error(w, "Failed to save address book", http.StatusInternalServerError)
+			return
+		}
+		if _, err := tmpBook.Write(data); err != nil {
+			_ = tmpBook.Close()
+			http.Error(w, "Failed to save address book", http.StatusInternalServerError)
+			return
+		}
+		if err := tmpBook.Sync(); err != nil {
+			_ = tmpBook.Close()
+			http.Error(w, "Failed to save address book", http.StatusInternalServerError)
+			return
+		}
+		if err := tmpBook.Close(); err != nil {
+			http.Error(w, "Failed to save address book", http.StatusInternalServerError)
+			return
+		}
+		if err := os.Rename(tmpBookPath, bookFile); err != nil {
+			http.Error(w, "Failed to save address book", http.StatusInternalServerError)
+			return
+		}
+		committed = true
+		_ = os.Chmod(bookFile, 0600)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "saved"})
 		return
@@ -3002,7 +3100,7 @@ func handleExportCSV(w http.ResponseWriter, r *http.Request) {
 	}
 	addr := strings.TrimSpace(r.URL.Query().Get("address"))
 	if addr == "" {
-		addr = activeAddress
+		_, addr = getActiveWalletMeta()
 	}
 	client := &http.Client{Timeout: 8 * time.Second}
 	tipH, tipHash := currentKnownTipHeightAndHash()

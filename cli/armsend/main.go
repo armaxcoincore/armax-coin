@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -28,6 +29,27 @@ type BalanceResponse struct {
 
 // exitError reports a fatal error and exits 1. In -json mode the error is a
 // JSON object on stdout so scripts can parse it; otherwise it is a "[-]" line on stderr.
+func queryNextBlockHeight(getFn func(string) (*http.Response, error), daemonURL, expectedNetID string) int {
+	stResp, stErr := getFn(daemonURL + "/stats")
+	if stErr != nil {
+		return 0
+	}
+	defer stResp.Body.Close()
+	if stResp.StatusCode != http.StatusOK {
+		return 0
+	}
+	if stNet := strings.TrimSpace(stResp.Header.Get("X-Network-ID")); stNet != "" && !strings.EqualFold(stNet, expectedNetID) {
+		return 0
+	}
+	var st struct {
+		Height int `json:"height"`
+	}
+	if json.NewDecoder(io.LimitReader(stResp.Body, 1<<20)).Decode(&st) == nil && st.Height >= 0 {
+		return st.Height + 1
+	}
+	return 0
+}
+
 func exitError(jsonMode bool, msg string) {
 	if jsonMode {
 		out, _ := json.Marshal(map[string]interface{}{"status": "error", "error": msg})
@@ -79,8 +101,8 @@ func main() {
 	walletFilePtr := flag.String("wallet", "wallet.json", "Encrypted wallet keystore file path")
 	filePtr := flag.String("file", "", "Encrypted wallet keystore file path (deprecated alias for -wallet)")
 	daemonPtr := flag.String("daemon", "", "RPC daemon node URL (default: profile port)")
-	rpcUserPtr := flag.String("rpcuser", "", "Username for RPC authentication")
-	rpcPasswordPtr := flag.String("rpcpassword", "", "Password for RPC authentication")
+	rpcUserPtr := flag.String("rpcuser", os.Getenv("ARMX_RPC_USER"), "Username for RPC authentication (or ARMX_RPC_USER)")
+	rpcPasswordPtr := flag.String("rpcpassword", os.Getenv("ARMX_RPC_PASSWORD"), "Password for RPC authentication (prefer ARMX_RPC_PASSWORD env var)")
 	dryRunPtr := flag.Bool("dry-run", false, "Validate transaction parameters and balance without broadcasting to network")
 	estimateFeePtr := flag.Bool("estimatefee", false, "Calculate and display estimated minimum transaction fee")
 	mempoolPtr := flag.Bool("mempool", false, "Display unconfirmed transactions waiting in daemon mempool")
@@ -130,6 +152,9 @@ func main() {
 	flag.Visit(func(f *flag.Flag) {
 		if repl, ok := legacyAliases[f.Name]; ok {
 			fmt.Fprintf(os.Stderr, "[!] Warning: -%s is a deprecated alias, please use -%s instead\n", f.Name, repl)
+		}
+		if f.Name == "rpcpassword" {
+			fmt.Fprintln(os.Stderr, "[!] Warning: passing -rpcpassword via CLI flag exposes secrets in process lists; prefer ARMX_RPC_PASSWORD env var.")
 		}
 	})
 
@@ -255,12 +280,12 @@ func main() {
 	// 1. Transaction Decoding Mode
 	if *decodePtr != "" {
 		txid := strings.TrimSpace(*decodePtr)
-		resp, err := httpGetAuth(fmt.Sprintf("%s/tx?hash=%s", daemonURL, txid))
+		resp, err := httpGetAuth(fmt.Sprintf("%s/tx?hash=%s", daemonURL, url.QueryEscape(txid)))
 		if err != nil {
 			exitError(*jsonPtr, fmt.Sprintf("Failed to query transaction from daemon: %v", err))
 		}
 		defer resp.Body.Close()
-		data, _ := io.ReadAll(resp.Body)
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 		if resp.StatusCode != http.StatusOK {
 			exitError(*jsonPtr, fmt.Sprintf("Transaction '%s' not found (HTTP %d)", txid, resp.StatusCode))
 		}
@@ -299,12 +324,12 @@ func main() {
 	// 2. Query Confirmations Mode
 	if *confirmationsPtr != "" {
 		txid := strings.TrimSpace(*confirmationsPtr)
-		resp, err := httpGetAuth(fmt.Sprintf("%s/tx?hash=%s", daemonURL, txid))
+		resp, err := httpGetAuth(fmt.Sprintf("%s/tx?hash=%s", daemonURL, url.QueryEscape(txid)))
 		if err != nil {
 			exitError(*jsonPtr, fmt.Sprintf("Failed to query transaction: %v", err))
 		}
 		defer resp.Body.Close()
-		data, _ := io.ReadAll(resp.Body)
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 		if resp.StatusCode != http.StatusOK {
 			exitError(*jsonPtr, fmt.Sprintf("Transaction '%s' not found in mempool or chain", txid))
 		}
@@ -328,16 +353,18 @@ func main() {
 
 	// 3. Estimate Fee Mode
 	if *estimateFeePtr {
-		typicalTxSize := 10800 // Typical post-quantum ML-DSA-65 serialized JSON transaction size (~10.8 KB)
-		estFee := wallet.EstimateMinMempoolFee(nil, "", 0, 0)
-		if minBySize := core.CalculateMinMempoolFee(typicalTxSize); minBySize > estFee {
-			estFee = minBySize
-		}
+		nextHeight := queryNextBlockHeight(httpGetAuth, daemonURL, activeNet.NetworkID)
+		typicalTxSize := wallet.TypicalTxEffectiveSize(nextHeight)
+		estFee := wallet.EstimateMinMempoolFeeAtHeight(nil, "", 0, 0, nextHeight)
+		const binaryTxSize = 5320
+		binFee := core.CalculateMinMempoolFee(binaryTxSize)
 		if *jsonPtr {
 			out, _ := json.Marshal(map[string]interface{}{
 				"typical_size_bytes": typicalTxSize,
 				"fee_armx":           float64(estFee) / 1e8,
 				"fee_armoids":        estFee,
+				"binary_size_bytes":  binaryTxSize,
+				"binary_fee_armoids": binFee,
 			})
 			fmt.Println(string(out))
 			return
@@ -347,6 +374,7 @@ func main() {
 		fmt.Println("==================================================")
 		fmt.Printf("  Estimated Payload Size : ~%d bytes (Post-Quantum ML-DSA-65)\n", typicalTxSize)
 		fmt.Printf("  Estimated Minimum Fee  : %.8f %s (%d Armoids)\n", float64(estFee)/1e8, core.ActiveTicker(), estFee)
+		fmt.Printf("  TxBinaryV1 Compact Fee : %.8f %s (%d Armoids for ~%d bytes)\n", float64(binFee)/1e8, core.ActiveTicker(), binFee, binaryTxSize)
 		fmt.Println("==================================================")
 		return
 	}
@@ -358,7 +386,7 @@ func main() {
 			exitError(*jsonPtr, fmt.Sprintf("Failed to query mempool from daemon (%s): %v", daemonURL, err))
 		}
 		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 		if resp.StatusCode != http.StatusOK {
 			exitError(*jsonPtr, fmt.Sprintf("Failed to retrieve mempool from daemon (HTTP %d)", resp.StatusCode))
 		}
@@ -447,12 +475,12 @@ func main() {
 		os.Exit(2)
 	}
 
-	preSignMinFee := userFee
-	if fallbackFee := wallet.EstimateMinMempoolFee(nil, "", 0, 0); preSignMinFee < fallbackFee {
-		preSignMinFee = fallbackFee
+	minBoundFee := userFee
+	if minPossible := core.CalculateMinMempoolFee(5320); minBoundFee < minPossible {
+		minBoundFee = minPossible
 	}
-	if finalAmount > core.MaxSupply-preSignMinFee {
-		exitError(*jsonPtr, fmt.Sprintf("Transaction amount (%d) + fee (%d) exceeds maximum supply (%d)", finalAmount, preSignMinFee, core.MaxSupply))
+	if finalAmount > core.MaxSupply-minBoundFee {
+		exitError(*jsonPtr, fmt.Sprintf("Transaction amount (%d) + fee (%d) exceeds maximum supply (%d)", finalAmount, minBoundFee, core.MaxSupply))
 	}
 
 	if !core.ValidateAddress(*toPtr) {
@@ -473,13 +501,13 @@ func main() {
 	if !*jsonPtr {
 		fmt.Printf("[~] Querying account nonce and balance from %s...\n", daemonURL)
 	}
-	resp, err := httpGetAuth(fmt.Sprintf("%s/balance?address=%s", daemonURL, w.Address))
+	resp, err := httpGetAuth(fmt.Sprintf("%s/balance?address=%s", daemonURL, url.QueryEscape(w.Address)))
 	if err != nil {
 		exitError(*jsonPtr, fmt.Sprintf("Failed to query daemon: %v", err))
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode != http.StatusOK {
 		exitError(*jsonPtr, fmt.Sprintf("Failed to query balance from daemon (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(body))))
 	}
@@ -490,6 +518,20 @@ func main() {
 	var balResp BalanceResponse
 	if err := json.Unmarshal(body, &balResp); err != nil {
 		exitError(*jsonPtr, fmt.Sprintf("Invalid response from daemon: %s", string(body)))
+	}
+
+	txNonce := balResp.NextNonce
+	if txNonce <= 0 {
+		txNonce = balResp.PendingNonce + 1
+	}
+
+	nextHeight := queryNextBlockHeight(httpGetAuth, daemonURL, activeNet.NetworkID)
+	preSignMinFee := userFee
+	if estFee := wallet.EstimateMinMempoolFeeAtHeight(w, *toPtr, finalAmount, txNonce, nextHeight); preSignMinFee < estFee {
+		preSignMinFee = estFee
+	}
+	if finalAmount > core.MaxSupply-preSignMinFee {
+		exitError(*jsonPtr, fmt.Sprintf("Transaction amount (%d) + fee (%d) exceeds maximum supply (%d)", finalAmount, preSignMinFee, core.MaxSupply))
 	}
 
 	preSignAvailBal := balResp.PendingBalance
@@ -513,15 +555,11 @@ func main() {
 		fmt.Printf("[+] Current Nonce      : #%d\n", balResp.PendingNonce)
 	}
 
-	txNonce := balResp.NextNonce
-	if txNonce <= 0 {
-		txNonce = balResp.PendingNonce + 1
-	}
 	if !*jsonPtr {
 		fmt.Printf("[+] Next TX Nonce      : #%d\n", txNonce)
 	}
 
-	// Construct transaction and calculate minimum fee
+	// Construct transaction and calculate minimum fee using consensus FeeEffectiveTxSize
 	tx := core.Transaction{
 		Sender:    w.Address,
 		SenderPub: w.PublicKey,
@@ -535,22 +573,29 @@ func main() {
 		exitError(*jsonPtr, fmt.Sprintf("Post-quantum signature creation failed: %v", err))
 	}
 
-	minRequiredFee := core.CalculateMinMempoolFee(tx.Size())
+	effSize := core.FeeEffectiveTxSize(&tx, nextHeight)
+	minRequiredFee := core.CalculateMinMempoolFee(effSize)
 	if userFee < minRequiredFee {
 		if userFee == 0 {
 			if !*jsonPtr {
-				fmt.Printf("[+] Automatic fee applied: %.8f %s (%d Armoids for %d bytes)\n",
-					float64(minRequiredFee)/1e8, core.ActiveTicker(), minRequiredFee, tx.Size())
+				fmt.Printf("[+] Automatic fee applied: %.8f %s (%d Armoids for %d effective bytes)\n",
+					float64(minRequiredFee)/1e8, core.ActiveTicker(), minRequiredFee, effSize)
 			}
 		} else {
 			if !*jsonPtr {
-				fmt.Fprintf(os.Stderr, "[!] User fee (%.8f %s) below minimum relay fee. Automatically upgraded to: %.8f %s (%d Armoids for %d bytes)\n",
-					float64(userFee)/1e8, core.ActiveTicker(), float64(minRequiredFee)/1e8, core.ActiveTicker(), minRequiredFee, tx.Size())
+				fmt.Fprintf(os.Stderr, "[!] User fee (%.8f %s) below minimum relay fee. Automatically upgraded to: %.8f %s (%d Armoids for %d effective bytes)\n",
+					float64(userFee)/1e8, core.ActiveTicker(), float64(minRequiredFee)/1e8, core.ActiveTicker(), minRequiredFee, effSize)
 			}
 		}
 		tx.Fee = minRequiredFee
 		if err := tx.Sign(w.PrivateKey); err != nil {
 			exitError(*jsonPtr, fmt.Sprintf("Re-signing failed: %v", err))
+		}
+		if effAfter := core.FeeEffectiveTxSize(&tx, nextHeight); core.CalculateMinMempoolFee(effAfter) > tx.Fee {
+			tx.Fee = core.CalculateMinMempoolFee(effAfter)
+			if err := tx.Sign(w.PrivateKey); err != nil {
+				exitError(*jsonPtr, fmt.Sprintf("Re-signing failed: %v", err))
+			}
 		}
 	}
 
@@ -615,7 +660,7 @@ func main() {
 	}
 	defer postResp.Body.Close()
 
-	respBytes, _ := io.ReadAll(postResp.Body)
+	respBytes, _ := io.ReadAll(io.LimitReader(postResp.Body, 1<<20))
 	if postResp.StatusCode != http.StatusOK {
 		if *jsonPtr {
 			out, _ := json.Marshal(map[string]interface{}{
@@ -670,11 +715,11 @@ func main() {
 		}
 		for {
 			time.Sleep(3 * time.Second)
-			checkResp, err := httpGetAuth(fmt.Sprintf("%s/tx?hash=%s", daemonURL, txHash))
+			checkResp, err := httpGetAuth(fmt.Sprintf("%s/tx?hash=%s", daemonURL, url.QueryEscape(txHash)))
 			if err != nil {
 				continue
 			}
-			data, _ := io.ReadAll(checkResp.Body)
+			data, _ := io.ReadAll(io.LimitReader(checkResp.Body, 4<<20))
 			checkResp.Body.Close()
 			if checkResp.StatusCode == http.StatusOK {
 				var res struct {
