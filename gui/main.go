@@ -335,6 +335,9 @@ type StatsResponse struct {
 	DifficultyHashes    string  `json:"difficulty_hashes"`
 	DifficultyFormatted string  `json:"difficulty_formatted"`
 	DAAEngine           string  `json:"daa_engine"`
+	PoWAlgo             string  `json:"pow_algo,omitempty"`
+	PoWAlgoName         string  `json:"pow_algo_name,omitempty"`
+	Algorithm           string  `json:"algorithm,omitempty"`
 	ASERTScheduleDrift  int64   `json:"asert_drift_seconds"`
 	ASERTDriftFormatted string  `json:"asert_drift_formatted"`
 	LatestHash          string  `json:"latest_hash"`

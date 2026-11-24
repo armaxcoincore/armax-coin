@@ -136,6 +136,56 @@ func TestGetCurrentDAAEngineName(t *testing.T) {
 	}
 }
 
+// TestGetCurrentPoWAlgo verifies canonical identifier and display naming across eras.
+func TestGetCurrentPoWAlgo(t *testing.T) {
+	SetArmaxHashActivationHeight(520)
+	defer ResetArmaxHashActivationHeightOverride()
+	SetArmaxHashV2ActivationHeight(2500)
+	defer ResetArmaxHashV2ActivationHeightOverride()
+
+	if algo := GetCurrentPoWAlgo(0); algo != "sha256d" {
+		t.Fatalf("expected sha256d at height 0, got %s", algo)
+	}
+	if name := GetCurrentPoWAlgoName(0); name != "SHA-256d" {
+		t.Fatalf("expected SHA-256d at height 0, got %s", name)
+	}
+
+	if algo := GetCurrentPoWAlgo(519); algo != "sha256d" {
+		t.Fatalf("expected sha256d at height 519, got %s", algo)
+	}
+	if name := GetCurrentPoWAlgoName(519); name != "SHA-256d" {
+		t.Fatalf("expected SHA-256d at height 519, got %s", name)
+	}
+
+	if algo := GetCurrentPoWAlgo(520); algo != "armaxhash" {
+		t.Fatalf("expected armaxhash at height 520, got %s", algo)
+	}
+	if name := GetCurrentPoWAlgoName(520); name != "ArmaxHash v1" {
+		t.Fatalf("expected ArmaxHash v1 at height 520, got %s", name)
+	}
+
+	if algo := GetCurrentPoWAlgo(2499); algo != "armaxhash" {
+		t.Fatalf("expected armaxhash at height 2499, got %s", algo)
+	}
+	if name := GetCurrentPoWAlgoName(2499); name != "ArmaxHash v1" {
+		t.Fatalf("expected ArmaxHash v1 at height 2499, got %s", name)
+	}
+
+	if algo := GetCurrentPoWAlgo(2500); algo != "armaxhash-v2" {
+		t.Fatalf("expected armaxhash-v2 at height 2500, got %s", algo)
+	}
+	if name := GetCurrentPoWAlgoName(2500); name != "ArmaxHash v2" {
+		t.Fatalf("expected ArmaxHash v2 at height 2500, got %s", name)
+	}
+
+	if algo := GetCurrentPoWAlgo(23642); algo != "armaxhash-v2" {
+		t.Fatalf("expected armaxhash-v2 at height 23642, got %s", algo)
+	}
+	if name := GetCurrentPoWAlgoName(23642); name != "ArmaxHash v2" {
+		t.Fatalf("expected ArmaxHash v2 at height 23642, got %s", name)
+	}
+}
+
 // TestGetASERTScheduleDrift verifies drift calculation against Anchor #15,999.
 func TestGetASERTScheduleDrift(t *testing.T) {
 	SetASERTActivationHeight(16000)

@@ -511,6 +511,8 @@ func TestWebUI_LightDarkThemeAndDiagnosticsConsole(t *testing.T) {
 		`btn-sidebar`,
 		`CPU Miner Configuration`,
 		`lblMinerHps`,
+		`lblNetDAA`,
+		`lblNetAlgo`,
 	} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("Web UI missing expected element/token %q", needle)

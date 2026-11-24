@@ -41,6 +41,9 @@ func TestStatsEndpointReturnsDualDifficultyFields(t *testing.T) {
 		"difficulty_hashes",
 		"difficulty_formatted",
 		"daa_engine",
+		"pow_algo",
+		"pow_algo_name",
+		"algorithm",
 		"network_hashrate_estimated",
 		"network_hashrate_formatted",
 	}
@@ -49,6 +52,14 @@ func TestStatsEndpointReturnsDualDifficultyFields(t *testing.T) {
 		if _, ok := stats[key]; !ok {
 			t.Errorf("missing key %q in /stats payload", key)
 		}
+	}
+
+	// Verify PoW algorithm is sha256d at genesis
+	if algo, ok := stats["pow_algo"].(string); !ok || algo != "sha256d" {
+		t.Errorf("expected pow_algo 'sha256d', got %v", stats["pow_algo"])
+	}
+	if algoName, ok := stats["pow_algo_name"].(string); !ok || algoName != "SHA-256d" {
+		t.Errorf("expected pow_algo_name 'SHA-256d', got %v", stats["pow_algo_name"])
 	}
 
 	// Verify DAA engine is LWMA-1 for genesis chain

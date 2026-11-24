@@ -811,6 +811,8 @@ func NewRPCHandler(bc *core.Blockchain, peerServer *PeerServer, limiter *IPRateL
 		hashesPerBlock := core.TargetToHashesPerBlock(tipTarget)
 		diffFormatted := core.FormatHashes(hashesPerBlock)
 		daaEngine := core.GetCurrentDAAEngineName(height)
+		powAlgo := core.GetCurrentPoWAlgo(height)
+		powAlgoName := core.GetCurrentPoWAlgoName(height)
 		estNetHps := core.TargetToEstimatedNetworkHashrate(tipTarget)
 		estNetHpsFormatted := core.FormatHashrate(estNetHps)
 
@@ -842,6 +844,11 @@ func NewRPCHandler(bc *core.Blockchain, peerServer *PeerServer, limiter *IPRateL
 			"difficulty_hashes":             hashesPerBlock.String(),
 			"difficulty_formatted":          diffFormatted,
 			"daa_engine":                    daaEngine,
+			"pow_algo":                      powAlgo,
+			"pow_algo_name":                 powAlgoName,
+			"algorithm":                     powAlgoName,
+			"candidate_pow_algo":            core.GetCurrentPoWAlgo(height + 1),
+			"candidate_pow_algo_name":       core.GetCurrentPoWAlgoName(height + 1),
 			"network_hashrate_estimated":    estNetHps.String(),
 			"network_hashrate_formatted":    estNetHpsFormatted,
 			"chainwork":                     chainwork,
@@ -1177,6 +1184,7 @@ func NewRPCHandler(bc *core.Blockchain, peerServer *PeerServer, limiter *IPRateL
 			"transactions":         candidateTxs,
 			"merkleroot":           merkleRoot,
 			"pow_algo":             powAlgo,
+			"pow_algo_name":        core.GetCurrentPoWAlgoName(latest.Index + 1),
 		})
 	})
 
@@ -1226,6 +1234,7 @@ func NewRPCHandler(bc *core.Blockchain, peerServer *PeerServer, limiter *IPRateL
 			"pooledtx":                pooledTx,
 			"chain":                   chainName,
 			"pow_algo":                powAlgo,
+			"pow_algo_name":           core.GetCurrentPoWAlgoName(latest.Index + 1),
 			"generate":                isGenerating,
 			"warnings":                "",
 		}

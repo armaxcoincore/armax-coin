@@ -151,13 +151,7 @@ func (b *Block) CalculateHash() string {
 
 // PoWAlgorithm returns the PoW algorithm name used for this block ("sha256d", "armaxhash", or "armaxhash-v2").
 func (b *Block) PoWAlgorithm() string {
-	if IsArmaxHashV2Active(b.Index) {
-		return "armaxhash-v2"
-	}
-	if IsArmaxHashActive(b.Index) {
-		return "armaxhash"
-	}
-	return "sha256d"
+	return GetCurrentPoWAlgo(b.Index)
 }
 
 // Size returns the approximate serialized byte size of the block, caching the result [C-28, C-34, v1.0.6]
