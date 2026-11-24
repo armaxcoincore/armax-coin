@@ -12,14 +12,18 @@ func TestBanStorePersistsAcrossRestart(t *testing.T) {
 	dir := t.TempDir()
 
 	ps := NewPeerServer("0", nil, dir, "ARMX-TESTNET-1")
+	defer ps.Stop()
+
 	ps.AddBanScore("203.0.113.9", 100)
 	if !ps.IsBanned("203.0.113.9") {
 		t.Fatal("ip should be banned")
 	}
-	// Persist is asynchronous when triggered by AddBanScore; write synchronously for determinism.
-	ps.persistBans()
+	// Wait for asynchronous persist triggered by AddBanScore to complete before restarting.
+	ps.banPersistWg.Wait()
 
 	restarted := NewPeerServer("0", nil, dir, "ARMX-TESTNET-1")
+	defer restarted.Stop()
+
 	if !restarted.IsBanned("203.0.113.9") {
 		t.Fatal("ban was lost after restart")
 	}
@@ -33,6 +37,7 @@ func TestBanStoreDropsExpiredAndCorrupt(t *testing.T) {
 	dir := t.TempDir()
 
 	ps := NewPeerServer("0", nil, dir, "ARMX-TESTNET-1")
+	defer ps.Stop()
 	path := ps.banStorePath()
 	if path == "" {
 		t.Fatal("no ban store path")
