@@ -59,9 +59,9 @@ Get-Content .\SHA256SUMS | Select-String "armax-v1.0.13-windows-amd64.zip"
 
 ## 5. Official Release Status
 
-- **Target Release (`v1.0.13`):** **Pre-Release Preparation (Public Testnet Release)**
+- **Target Release (`v1.0.13` — 2026-11-27):** **Pre-Release Preparation (Public Testnet Release)**
   - **Release Notes:** [`docs/releases/v1.0.13.md`](releases/v1.0.13.md)
-  - **Status:** P2P DoS & slot isolation hardening (`38/12`, `8 MiB`/`32 MiB` budgets, strict `SeedHost` pins), pre-snapshot block & per-account snapshot verification, ML-DSA-65 zeroization, `Option 1A` / `Option 2A-i` rolling Testnet compatibility, wallet/GUI/miner security, reproducible `build.sh` flags, and 8-scenario adversarial + `375`-tx benchmark verification
+  - **Status:** P2P DoS & slot isolation hardening (`38/12`, `8 MiB`/`32 MiB` budgets, strict `SeedHost` pins), pre-snapshot block & per-account snapshot verification, ML-DSA-65 zeroization, `Option 1A` / `Option 2A-i` rolling Testnet compatibility, wallet/GUI/miner security, GUI peer IP privacy redaction & PoW/DAA display separation, reproducible `build.sh` flags, `go.mod` dependency pruning, and 8-scenario adversarial + `375`-tx benchmark verification
   - **Target Architectures:**
     - `armax-v1.0.13-linux-amd64.tar.gz` (Linux 64-bit x86; includes `armgui` Web GUI)
     - `armax-v1.0.13-linux-arm64.tar.gz` (Linux 64-bit ARM / Raspberry Pi / SBC; includes `armgui` Web GUI)
