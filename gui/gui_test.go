@@ -411,10 +411,10 @@ func TestGUIExecuteConsoleCommand_NetworkMatchAccepted(t *testing.T) {
 		t.Fatalf("expected successful HTTP 200 output for matching node, got: %s", out)
 	}
 
-	// 2. getpeerinfo -> queries /peers after verifying /stats
+	// 2. getpeerinfo -> queries /peers after verifying /stats (IP redacted by GUI sanitizer)
 	outPeers := executeConsoleCommand("getpeerinfo", srv.URL, "ARMX-TESTNET-1")
-	if !strings.Contains(outPeers, "HTTP 200") || !strings.Contains(outPeers, "127.0.0.1:8333") {
-		t.Fatalf("expected successful peer info for matching node, got: %s", outPeers)
+	if !strings.Contains(outPeers, "HTTP 200") || !strings.Contains(outPeers, "[hidden-ip]:8333") || strings.Contains(outPeers, "127.0.0.1:8333") {
+		t.Fatalf("expected sanitized peer info for matching node, got: %s", outPeers)
 	}
 }
 
@@ -1059,13 +1059,13 @@ func TestGUIPeerInspector_FiltersEphemeralPeers(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("expected 2 safe peer rows, got %d: %+v", len(rows), rows)
 	}
-	if rows[0].Role != "DNS Seed" || rows[1].Role != "Public Node" {
-		t.Errorf("unexpected peer roles: %+v", rows)
+	if rows[0].Role != "DNS Seed" || rows[0].SubLabel != "Seed endpoint" || rows[1].Role != "P2P Peer" || rows[1].SubLabel != "Endpoint hidden" {
+		t.Errorf("unexpected peer roles/sub-labels: %+v", rows)
 	}
 
 	m := &PeerInspectorModel{items: rows}
-	if m.RowCount() != 2 || m.Value(0, 1) != "DNS Seed" || m.Value(1, 0) != "198.51.100.30:19335" {
-		t.Errorf("unexpected PeerInspectorModel values")
+	if m.RowCount() != 2 || m.Value(0, 1) != "DNS Seed" || m.Value(1, 0) != "Public Node" {
+		t.Errorf("unexpected PeerInspectorModel values: row0=%v row1=%v", m.Value(0, 1), m.Value(1, 0))
 	}
 }
 
