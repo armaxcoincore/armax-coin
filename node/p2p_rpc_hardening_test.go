@@ -31,9 +31,9 @@ func newP2PRPCHardeningBlockchain(t *testing.T) *core.Blockchain {
 }
 
 // TestP2P_GetMempoolPollingRateAndNoDuplicateSyncMempool verifies:
-// 1) inboundConnSession.connMempoolTokens refills at 1/8s (7.5 req/min) matching per-IP limits
-//    while still silently throttling excess burst frames.
-// 2) SyncBestPeer does not trigger a duplicate GET_MEMPOOL broadcast.
+//  1. inboundConnSession.connMempoolTokens refills at 1/8s (7.5 req/min) matching per-IP limits
+//     while still silently throttling excess burst frames.
+//  2. SyncBestPeer does not trigger a duplicate GET_MEMPOOL broadcast.
 func TestP2P_GetMempoolPollingRateAndNoDuplicateSyncMempool(t *testing.T) {
 	bc := newP2PRPCHardeningBlockchain(t)
 	ps := NewPeerServer(getFreePort(t), bc, t.TempDir())

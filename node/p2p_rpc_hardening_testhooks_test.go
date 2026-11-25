@@ -38,12 +38,12 @@ func mineP2PTestBlockOnChain(t *testing.T, bc *core.Blockchain, chain []core.Blo
 }
 
 // TestP2P_ClockSkew3TierParityAcrossNewBlockAndReorg verifies:
-// 1) ProcessIncomingBlock (tip path), handlePushedBlocks direct tip extension, and handlePushedBlocks
-//    reorg (ResolveFork) path all apply the unified 3-tier future-timestamp policy via handleBlockValidationError:
-//    - <=30s skew: 0 ban score, not negative-cached
-//    - 31..600s skew: clock-skew strike system (+5 only after >=3 strikes), not negative-cached
-//    - >600s skew: immediate +10 ban score and negative-cached
-//    - Non-clock-skew error: +20 ban score and negative-cached
+//  1. ProcessIncomingBlock (tip path), handlePushedBlocks direct tip extension, and handlePushedBlocks
+//     reorg (ResolveFork) path all apply the unified 3-tier future-timestamp policy via handleBlockValidationError:
+//     - <=30s skew: 0 ban score, not negative-cached
+//     - 31..600s skew: clock-skew strike system (+5 only after >=3 strikes), not negative-cached
+//     - >600s skew: immediate +10 ban score and negative-cached
+//     - Non-clock-skew error: +20 ban score and negative-cached
 func TestP2P_ClockSkew3TierParityAcrossNewBlockAndReorg(t *testing.T) {
 	core.LockNetworkForTesting(t)
 	core.SetTargetOverrideForTesting(core.DifficultyToTarget(1))

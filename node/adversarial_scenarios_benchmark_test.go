@@ -145,9 +145,9 @@ func TestAdversarialScenario1_PartitionAndEclipseRecovery(t *testing.T) {
 }
 
 // TestAdversarialScenario2_MalformedFrameAndCompressedStormMetrics exercises Track 6 Scenario 2:
-// - Malformed JSON, wrong NetworkID, >8 MiB oversized frame, and deflate-bomb PUSH_BLOCKS.
-// - Verifies banned offenders are dropped without deadline refreshes, honest peer GET_HEIGHT succeeds,
-//   and records runtime.MemStats + goroutine counts.
+//   - Malformed JSON, wrong NetworkID, >8 MiB oversized frame, and deflate-bomb PUSH_BLOCKS.
+//   - Verifies banned offenders are dropped without deadline refreshes, honest peer GET_HEIGHT succeeds,
+//     and records runtime.MemStats + goroutine counts.
 func TestAdversarialScenario2_MalformedFrameAndCompressedStormMetrics(t *testing.T) {
 	core.LockNetworkForTesting(t)
 	t.Setenv("ARMX_DATA_DIR", t.TempDir())
@@ -319,8 +319,8 @@ func TestAdversarialScenario3_BoundaryReorg720And721Rejection(t *testing.T) {
 }
 
 // TestAdversarialScenario4_ClockSkewOffsetsAndInheritedTipSafety exercises Track 6 Scenario 4:
-// - Post-#20,000 C6 (+600s) rule accepts -300s / +300s, applies 3-tier penalties on +615s / +720s / +1300s,
-//   and /getblocktemplate enforces inherited-tip mintime/curtime/maxtime bounds.
+//   - Post-#20,000 C6 (+600s) rule accepts -300s / +300s, applies 3-tier penalties on +615s / +720s / +1300s,
+//     and /getblocktemplate enforces inherited-tip mintime/curtime/maxtime bounds.
 func TestAdversarialScenario4_ClockSkewOffsetsAndInheritedTipSafety(t *testing.T) {
 	core.LockNetworkForTesting(t)
 	core.SetTargetOverrideForTesting(core.DifficultyToTarget(1))
@@ -495,6 +495,7 @@ func TestAdversarialScenario5_MempoolAndOrphanFloodHonestLiveness(t *testing.T) 
 func TestAdversarialScenario6_BoltDBCorruptionAndTamperedBlockSnapshotFailClosed(t *testing.T) {
 	core.LockNetworkForTesting(t)
 	core.SetTargetOverrideForTesting(core.DifficultyToTarget(1))
+	t.Cleanup(func() { core.SetDBPath("") })
 
 	// Part A: Corrupt BoltDB header -> .invalid-* backup rename, peers.json untouched.
 	dirA := t.TempDir()
@@ -605,12 +606,13 @@ func TestAdversarialScenario6_BoltDBCorruptionAndTamperedBlockSnapshotFailClosed
 }
 
 // TestAdversarialScenario7_RollingUpgradeV1012ToV1013AndMixedMesh exercises Track 6 Scenario 7:
-// - Loads v1.0.12 BoltDB + legacy peers.json + wallet keystore on v1.0.13.
-// - Verifies Testnet v1.0.12 <-> v1.0.13 compatibility for 11,000-Armoid fee (Option 2A-i)
-//   and uppercase hex tx relay (Option 1A), plus block propagation.
+//   - Loads v1.0.12 BoltDB + legacy peers.json + wallet keystore on v1.0.13.
+//   - Verifies Testnet v1.0.12 <-> v1.0.13 compatibility for 11,000-Armoid fee (Option 2A-i)
+//     and uppercase hex tx relay (Option 1A), plus block propagation.
 func TestAdversarialScenario7_RollingUpgradeV1012ToV1013AndMixedMesh(t *testing.T) {
 	core.LockNetworkForTesting(t)
 	core.SetTargetOverrideForTesting(core.DifficultyToTarget(1))
+	t.Cleanup(func() { core.SetDBPath("") })
 
 	nodeDir := t.TempDir()
 	t.Setenv("ARMX_DATA_DIR", nodeDir)
@@ -698,9 +700,9 @@ func TestAdversarialScenario7_RollingUpgradeV1012ToV1013AndMixedMesh(t *testing.
 }
 
 // TestAdversarialScenario8_FullBlock375MLDSA65VerificationBenchmark exercises Track 6 Scenario 8:
-// - Constructs a packed TxBinaryV1 block with 375 signed ML-DSA-65 user transactions + 1 coinbase = 376 txs.
-// - Measures full ValidateAndAddBlockWithError latency, P2P TLS NEW_BLOCK propagation latency,
-//   wire/binary sizes, and peak heap memory.
+//   - Constructs a packed TxBinaryV1 block with 375 signed ML-DSA-65 user transactions + 1 coinbase = 376 txs.
+//   - Measures full ValidateAndAddBlockWithError latency, P2P TLS NEW_BLOCK propagation latency,
+//     wire/binary sizes, and peak heap memory.
 func TestAdversarialScenario8_FullBlock375MLDSA65VerificationBenchmark(t *testing.T) {
 	core.LockNetworkForTesting(t)
 	core.SetTargetOverrideForTesting(core.DifficultyToTarget(1))
