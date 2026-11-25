@@ -2,15 +2,18 @@ package node
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -630,5 +633,103 @@ func TestP2PRPC_CorruptNodeTLSCertAndAuthLockoutHardening(t *testing.T) {
 	cfgLoopClean.RPCTLSKey = ""
 	if err := ValidateRPCBind(cfgLoopClean); err != nil {
 		t.Fatalf("expected loopback RPC bind with empty TLS pair to pass ValidateRPCBind, got: %v", err)
+	}
+}
+
+// TestP2P_InboundDisconnectReasonObservability verifies:
+// 1) classifyInboundDisconnectReason distinguishes remote_eof, handshake_timeout, idle_timeout,
+//    peer_reset, local_closed, frame_too_large, and payload_budget_exhausted.
+// 2) handleConnectionWithRelease logs reason, duration, msgs, active_before, and active (post-decrement)
+//    when P2P debug logging is enabled.
+func TestP2P_InboundDisconnectReasonObservability(t *testing.T) {
+	timeoutErr := os.ErrDeadlineExceeded
+	if got := classifyInboundDisconnectReason(io.EOF, AuthenticatedIdleTimeout, 3); got != "remote_eof" {
+		t.Fatalf("expected remote_eof for io.EOF, got %q", got)
+	}
+	if got := classifyInboundDisconnectReason(timeoutErr, InboundHandshakeTimeout, 0); got != "handshake_timeout" {
+		t.Fatalf("expected handshake_timeout for initial 5s timeout, got %q", got)
+	}
+	if got := classifyInboundDisconnectReason(timeoutErr, AuthenticatedIdleTimeout, 2); got != "idle_timeout" {
+		t.Fatalf("expected idle_timeout for authenticated 90s timeout, got %q", got)
+	}
+	if got := classifyInboundDisconnectReason(errors.New("read tcp: connection reset by peer"), AuthenticatedIdleTimeout, 1); got != "peer_reset" {
+		t.Fatalf("expected peer_reset for connection reset, got %q", got)
+	}
+	if got := classifyInboundDisconnectReason(net.ErrClosed, AuthenticatedIdleTimeout, 1); got != "local_closed" {
+		t.Fatalf("expected local_closed for net.ErrClosed, got %q", got)
+	}
+	if got := classifyInboundDisconnectReason(errors.New("message size exceeds hard limit of 8388608 bytes"), AuthenticatedIdleTimeout, 1); got != "frame_too_large" {
+		t.Fatalf("expected frame_too_large, got %q", got)
+	}
+	if got := classifyInboundDisconnectReason(errLargePayloadBudgetExhausted, AuthenticatedIdleTimeout, 1); got != "payload_budget_exhausted" {
+		t.Fatalf("expected payload_budget_exhausted, got %q", got)
+	}
+
+	t.Setenv("ARMX_P2P_DEBUG", "1")
+	var logBuf bytes.Buffer
+	logger := core.GetGlobalLogger()
+	prevLevel := logger.GetLevel()
+	logger.SetLevel(core.LogLevelDebug)
+	logger.SetCustomWriter(&logBuf)
+	t.Cleanup(func() {
+		logger.SetCustomWriter(nil)
+		logger.SetLevel(prevLevel)
+	})
+
+	bc := newP2PRPCHardeningBlockchain(t)
+	ps := NewPeerServer(getFreePort(t), bc, t.TempDir())
+	ps.DisableSubnetLimit = true
+	ps.AllowPrivatePeers = true
+	ps.RequireTLS = false
+	ps.P2PTOFU = false
+	t.Cleanup(ps.Stop)
+
+	releaseSlot, _, ok := ps.tryReserveInboundSlot("198.51.100.0", false)
+	if !ok {
+		t.Fatalf("tryReserveInboundSlot failed")
+	}
+
+	clientConn, serverConn := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ps.handleConnectionWithRelease(serverConn, "198.51.100.0", releaseSlot)
+	}()
+
+	req, err := json.Marshal(Message{
+		NetworkID: ps.GetNetworkID(),
+		Type:      "GET_HEIGHT",
+	})
+	if err != nil {
+		t.Fatalf("marshal GET_HEIGHT: %v", err)
+	}
+	reader := bufio.NewReader(clientConn)
+	_ = clientConn.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := clientConn.Write(append(req, '\n')); err != nil {
+		t.Fatalf("write GET_HEIGHT: %v", err)
+	}
+	if _, err := reader.ReadString('\n'); err != nil {
+		t.Fatalf("read HEIGHT_RESPONSE: %v", err)
+	}
+	_ = clientConn.Close()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleConnectionWithRelease did not exit after client close")
+	}
+
+	logOutput := logBuf.String()
+	for _, want := range []string{
+		"[P2P][CONN] inbound closed",
+		"reason=remote_eof",
+		"duration=",
+		"msgs=1",
+		"active_before=1",
+		"active=0",
+	} {
+		if !strings.Contains(logOutput, want) {
+			t.Fatalf("expected inbound closed debug log to contain %q, got:\n%s", want, logOutput)
+		}
 	}
 }
