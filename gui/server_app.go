@@ -108,7 +108,8 @@ func appendMiningLog(msg string) {
 	miningLogsLock.Lock()
 	defer miningLogsLock.Unlock()
 	ts := time.Now().Format("15:04:05")
-	miningLogs = append(miningLogs, fmt.Sprintf("[%s] %s", ts, msg))
+	sanitized := RedactIPs(msg)
+	miningLogs = append(miningLogs, fmt.Sprintf("[%s] %s", ts, sanitized))
 	if len(miningLogs) > 100 {
 		miningLogs = miningLogs[len(miningLogs)-100:]
 	}
@@ -118,7 +119,9 @@ func getMiningLogs() []string {
 	miningLogsLock.Lock()
 	defer miningLogsLock.Unlock()
 	copied := make([]string, len(miningLogs))
-	copy(copied, miningLogs)
+	for i, line := range miningLogs {
+		copied[i] = RedactIPs(line)
+	}
 	return copied
 }
 
@@ -558,8 +561,12 @@ func handleNodeStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	st := getNodeBootstrapStatus()
+	st.Detail = RedactIPs(st.Detail)
+	st.Error = RedactIPs(st.Error)
+	st.RPCURL = RedactIPs(st.RPCURL)
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(getNodeBootstrapStatus())
+	_ = json.NewEncoder(w).Encode(st)
 }
 
 func handleNodeRetry(w http.ResponseWriter, r *http.Request) {
@@ -1302,7 +1309,7 @@ func handleWalletInfo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"address":             exposedAddr,
-		"wallet_path":         findWalletPath(),
+		"wallet_path":         RedactLocalPaths(findWalletPath()),
 		"initialized":         curAddr != "",
 		"startup_locked":      startupLocked,
 		"locked":              !isUnlocked,
@@ -1746,7 +1753,7 @@ func handleCLI(w http.ResponseWriter, r *http.Request) {
 	client := http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(strings.TrimRight(rpcURL, "/") + path)
 	if err != nil {
-		http.Error(w, "Node query failed: "+err.Error(), http.StatusBadGateway)
+		http.Error(w, RedactIPs("Node query failed: "+err.Error()), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
@@ -1760,6 +1767,7 @@ func handleCLI(w http.ResponseWriter, r *http.Request) {
 	} else if (command == "getmempoolinfo" || command == "mempool") && resp.StatusCode == http.StatusOK {
 		bodyBytes = formatMempoolInfoJSON(bodyBytes, core.ActiveNetwork.NetworkID)
 	}
+	bodyBytes = []byte(RedactIPs(string(bodyBytes)))
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(bodyBytes)
@@ -1885,8 +1893,9 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 		setCachedSyncStatus(computeLegacyV1011SyncStatus(stats.Height, stats.PeersActive))
 	}
 
+	sanitizedStats := []byte(RedactIPs(string(bodyBytes)))
 	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write(bodyBytes)
+	_, _ = w.Write(sanitizedStats)
 }
 
 func handlePeers(w http.ResponseWriter, r *http.Request) {
@@ -1897,16 +1906,16 @@ func handlePeers(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := client.Get(targetURL)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		http.Error(w, RedactIPs(err.Error()), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, RedactIPs(err.Error()), http.StatusInternalServerError)
 		return
 	}
-	filtered := filterSafePeersJSON(bodyBytes, core.GetActiveNetwork())
+	filtered := formatPeersTableJSON(bodyBytes, core.GetActiveNetwork())
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(filtered)
 }
@@ -2019,12 +2028,18 @@ func handleChain(w http.ResponseWriter, r *http.Request) {
 	client := http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Get(rpcURL + "/chain")
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		http.Error(w, RedactIPs(err.Error()), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		http.Error(w, "Failed to read node /chain response", http.StatusInternalServerError)
+		return
+	}
+	sanitized := []byte(RedactIPs(string(bodyBytes)))
 	w.Header().Set("Content-Type", "application/json")
-	_, _ = io.Copy(w, io.LimitReader(resp.Body, 2<<20))
+	_, _ = w.Write(sanitized)
 }
 
 func formatMempoolInfoJSON(raw []byte, netID string) []byte {
@@ -2095,18 +2110,19 @@ func handleMempool(w http.ResponseWriter, r *http.Request) {
 	client := http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Get(rpcURL + "/mempool")
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		http.Error(w, RedactIPs(err.Error()), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, RedactIPs(err.Error()), http.StatusInternalServerError)
 		return
 	}
 	if resp.StatusCode == http.StatusOK {
 		bodyBytes = formatMempoolInfoJSON(bodyBytes, core.ActiveNetwork.NetworkID)
 	}
+	bodyBytes = []byte(RedactIPs(string(bodyBytes)))
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(bodyBytes)
@@ -3009,7 +3025,7 @@ func handleMineStatus(w http.ResponseWriter, r *http.Request) {
 		"local_height":     syncSt.Height,
 		"best_peer_height": syncSt.BestPeerHeight,
 		"sync_progress":    syncSt.SyncProgress,
-		"sync_reason":      syncSt.Reason,
+		"sync_reason":      RedactIPs(syncSt.Reason),
 		"optimal_threads":  optimalCPUThreads(),
 		"logs":             getMiningLogs(),
 		"cpu_cores":        runtime.NumCPU(),

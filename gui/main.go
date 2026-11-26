@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -138,9 +137,10 @@ func (m *SessionMinedModel) Value(row, col int) interface{} {
 
 // PeerInspectorRow represents a single privacy-filtered P2P peer row.
 type PeerInspectorRow struct {
-	Address string
-	Role    string
-	Status  string
+	Address  string
+	SubLabel string
+	Role     string
+	Status   string
 }
 
 type PeerInspectorModel struct {
@@ -167,70 +167,19 @@ func (m *PeerInspectorModel) Value(row, col int) interface{} {
 	return ""
 }
 
-func isSeedEndpoint(endpoint string, seeds []string) bool {
-	ep := strings.TrimSpace(endpoint)
-	for _, s := range seeds {
-		sc := strings.TrimSpace(s)
-		if strings.EqualFold(sc, ep) {
-			return true
-		}
-		if host, _, err := net.SplitHostPort(sc); err == nil && host != "" && strings.EqualFold(host, ep) {
-			return true
-		}
-	}
-	return false
-}
-
-// parseSafePeerInspectorRows filters raw /peers JSON via filterSafePeersJSON so ephemeral home nodes are never exposed.
+// parseSafePeerInspectorRows filters raw /peers JSON via filterSafePeersJSON and hides public peer endpoints.
 func parseSafePeerInspectorRows(raw []byte, netProfile core.NetworkProfile) []PeerInspectorRow {
-	safeRaw := filterSafePeersJSON(raw, netProfile)
-
-	var strPeers []string
-	if json.Unmarshal(safeRaw, &strPeers) == nil {
-		rows := make([]PeerInspectorRow, 0, len(strPeers))
-		for _, ep := range strPeers {
-			role := "Public Node"
-			if isSeedEndpoint(ep, netProfile.DefaultSeeds) {
-				role = "DNS Seed"
-			}
-			rows = append(rows, PeerInspectorRow{Address: ep, Role: role, Status: "Active"})
-		}
-		return rows
+	entries := buildGUIPeerEntries(raw, netProfile)
+	rows := make([]PeerInspectorRow, 0, len(entries))
+	for _, e := range entries {
+		rows = append(rows, PeerInspectorRow{
+			Address:  e.DisplayAddress,
+			SubLabel: e.SubLabel,
+			Role:     e.Role,
+			Status:   e.Status,
+		})
 	}
-
-	var objPeers []map[string]interface{}
-	if json.Unmarshal(safeRaw, &objPeers) == nil {
-		rows := make([]PeerInspectorRow, 0, len(objPeers))
-		for _, obj := range objPeers {
-			addr, _ := obj["display_address"].(string)
-			if addr == "" {
-				addr, _ = obj["endpoint"].(string)
-			}
-			if addr == "" {
-				addr, _ = obj["addr"].(string)
-			}
-			if addr == "" {
-				addr, _ = obj["address"].(string)
-			}
-			if addr == "" {
-				addr, _ = obj["peer"].(string)
-			}
-			if addr == "" {
-				continue
-			}
-			role := "Public Node"
-			if isSeed, ok := obj["is_seed"].(bool); (ok && isSeed) || isSeedEndpoint(addr, netProfile.DefaultSeeds) {
-				role = "DNS Seed"
-			}
-			status := "Active"
-			if active, ok := obj["is_active"].(bool); ok && !active {
-				status = "Known"
-			}
-			rows = append(rows, PeerInspectorRow{Address: addr, Role: role, Status: status})
-		}
-		return rows
-	}
-	return nil
+	return rows
 }
 
 // filterTxItems applies text search, type selection, and optional YYYY-MM-DD date bounds.
@@ -627,14 +576,14 @@ func executeConsoleCommand(rawCmd string, targetRPCURL string, expectedNetID str
 	data, statusCode, err := queryValidatedNodeEndpoint(targetRPCURL, path, expectedNetID, 5*time.Second)
 	if err != nil {
 		if strings.Contains(err.Error(), "offline") || strings.Contains(err.Error(), "unreachable") {
-			return fmt.Sprintf("CLI error: daemon offline or unreachable: %v", err)
+			return RedactIPs(fmt.Sprintf("CLI error: daemon offline or unreachable: %v", err))
 		}
-		return fmt.Sprintf("CLI error: network validation failed: %v", err)
+		return RedactIPs(fmt.Sprintf("CLI error: network validation failed: %v", err))
 	}
 	if cmd == "getpeerinfo" {
 		data = filterSafePeersJSON(data, activeNetwork)
 	} else if cmd == "getmempoolinfo" || cmd == "mempool" {
 		data = formatMempoolInfoJSON(data, expectedNetID)
 	}
-	return fmt.Sprintf("$ %s\nHTTP %d\n%s", strings.TrimSpace(rawCmd), statusCode, string(data))
+	return RedactIPs(fmt.Sprintf("$ %s\nHTTP %d\n%s", strings.TrimSpace(rawCmd), statusCode, string(data)))
 }

@@ -513,6 +513,9 @@ func TestWebUI_LightDarkThemeAndDiagnosticsConsole(t *testing.T) {
 		`lblMinerHps`,
 		`lblNetDAA`,
 		`lblNetAlgo`,
+		`Connected Public Peers &amp; Seeds`,
+		`lblPeersActiveBadge`,
+		`Public endpoint details are hidden by default.`,
 	} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("Web UI missing expected element/token %q", needle)

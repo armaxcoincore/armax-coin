@@ -1033,17 +1033,25 @@ const webUIHTML = `<!DOCTYPE html>
       </div>
 
       <div class="card">
-        <div class="card-header">
-          <div class="section-title">Connected Public Peers &amp; Seeds (Privacy Filtered)</div>
-          <button type="button" class="btn btn-outline btn-sm" onclick="loadPeerInspector()">Refresh Peers</button>
+        <div class="card-header" style="flex-wrap:wrap; gap:10px;">
+          <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            <div class="section-title">Connected Public Peers &amp; Seeds</div>
+            <span id="lblPeersActiveBadge" class="status-pill unlocked">0 Active</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            <button type="button" class="btn btn-outline btn-sm" onclick="loadPeerInspector()">Refresh Peers</button>
+          </div>
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Peer Endpoint</th><th>Role</th><th>Status</th></tr></thead>
+            <thead><tr><th>Peer</th><th>Role</th><th>Status</th></tr></thead>
             <tbody id="tbodyPeerInspector">
               <tr><td colspan="3" style="color:var(--text-dim);">Loading safe peer list...</td></tr>
             </tbody>
           </table>
+        </div>
+        <div id="lblPeerPrivacyNote" style="font-size:12px; color:var(--text-dim); margin-top:10px;">
+          Public endpoint details are hidden by default.
         </div>
       </div>
     </section>
@@ -2302,15 +2310,31 @@ async function loadPeerInspector() {
   if (!res.ok) return;
   const data = await res.json();
   const tb = document.getElementById('tbodyPeerInspector');
+  const badge = document.getElementById('lblPeersActiveBadge');
   if (!Array.isArray(data) || data.length === 0) {
+    if (badge) badge.innerText = '0 Active';
     tb.innerHTML = '<tr><td colspan="3" style="color:var(--text-dim);">No active public peers or DNS seeds connected.</td></tr>';
     return;
   }
+  let activeCount = 0;
   tb.innerHTML = data.map(item => {
-    const ep = typeof item === 'string' ? item : (item.display_address || item.endpoint || item.addr || '');
-    const role = (typeof item === 'object' && item.is_seed) || ep.indexOf('seed') !== -1 ? 'DNS Seed' : 'Public Node';
-    return '<tr><td class="mono">' + escapeHTML(ep) + '</td><td>' + role + '</td><td><span class="status-pill unlocked">Active</span></td></tr>';
+    const isObj = typeof item === 'object' && item !== null;
+    const isSeed = isObj ? !!item.is_seed : String(item).indexOf('seed') !== -1;
+    const ep = isObj ? (item.display_address || item.endpoint || (isSeed ? '' : 'Public Node')) : (isSeed ? String(item) : 'Public Node');
+    const subLabel = isObj && item.sub_label ? item.sub_label : (isSeed ? 'Seed endpoint' : 'Endpoint hidden');
+    const role = isObj && item.role ? item.role : (isSeed ? 'DNS Seed' : 'P2P Peer');
+    const status = isObj && item.status ? item.status : 'Active';
+    const isActive = isObj && item.is_active !== undefined ? !!item.is_active : (status === 'Active');
+    if (isActive) activeCount++;
+    const pillClass = isActive ? 'status-pill unlocked' : 'status-pill';
+    return '<tr>' +
+      '<td><div class="mono" style="font-weight:700;">' + escapeHTML(ep) + '</div>' +
+      '<div style="font-size:11px; color:var(--text-dim); margin-top:2px;">' + escapeHTML(subLabel) + '</div></td>' +
+      '<td>' + escapeHTML(role) + '</td>' +
+      '<td><span class="' + pillClass + '">' + escapeHTML(status) + '</span></td>' +
+      '</tr>';
   }).join('');
+  if (badge) badge.innerText = activeCount + ' Active';
 }
 
 if (document.readyState === 'loading') {
