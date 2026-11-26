@@ -26,6 +26,7 @@ Makefile text eol=lf
 *.so binary
 *.dylib binary
 *.tar.gz binary
+*.gz binary
 *.zip binary
 *.syso binary
 *.db binary

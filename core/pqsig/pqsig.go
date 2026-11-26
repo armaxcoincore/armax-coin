@@ -75,6 +75,14 @@ func (sk *PrivateKey) Sign(msg []byte) ([]byte, error) {
 
 // Verify verifies a message signature against a public key using ML-DSA-65 and the protocol context string
 func Verify(pubBytes []byte, msg []byte, sig []byte) bool {
+	return verifyWithOptions(pubBytes, msg, sig, signOpts)
+}
+
+// verifyWithOptions is the single ML-DSA-65 verification path behind Verify. It is
+// split out so the NIST ACVP and Wycheproof vectors, which carry their own context
+// strings, exercise exactly the same length gates and key decoding that consensus
+// uses for ContextString.
+func verifyWithOptions(pubBytes []byte, msg []byte, sig []byte, opts *mldsa.Options) bool {
 	if len(pubBytes) != PublicKeySize || len(sig) != SignatureSize {
 		return false
 	}
@@ -82,7 +90,7 @@ func Verify(pubBytes []byte, msg []byte, sig []byte) bool {
 	if err != nil {
 		return false
 	}
-	return mldsa.Verify(pk, msg, sig, signOpts) == nil
+	return mldsa.Verify(pk, msg, sig, opts) == nil
 }
 
 // DeriveSeedFromBIP39 derives a deterministic 32-byte ML-DSA-65 account seed from a 64-byte BIP-39 root seed

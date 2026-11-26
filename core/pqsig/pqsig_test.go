@@ -132,13 +132,19 @@ func TestPQSig_GoldenDeterministicDerivation(t *testing.T) {
 		t.Fatalf("Same seed produced non-matching public keys")
 	}
 
-	t.Logf("Golden ML-DSA-65 SHA-256(PubKey) for seed0: %s", pubHashHex)
+	// Pinned value: a change here means existing wallets would restore to different
+	// keys and addresses, which must never happen silently.
+	const wantPubHashHex = "126be640c53ebf26336ce57ef1c075ce109552dc46bc53896bca9fe291db2eca"
+	if pubHashHex != wantPubHashHex {
+		t.Fatalf("SHA-256(PubKey) for seed0 changed: got %s, want %s", pubHashHex, wantPubHashHex)
+	}
 }
 
-// TestPQSig_FIPS204_KnownAnswerVector verifies deterministic FIPS 204 ML-DSA-65 vector:
-// Key generation, signing, and verification from a canonical 32-byte test vector.
-func TestPQSig_FIPS204_KnownAnswerVector(t *testing.T) {
-	// Canonical test seed: 32 bytes (0x01, 0x02, ..., 0x20)
+// TestPQSig_SignVerifyLengthBoundaries round-trips a hedged signature from a fixed
+// seed and checks that off-by-one public key and signature lengths are rejected.
+// Byte-exact known-answer coverage lives in pqsig_vectors_test.go.
+func TestPQSig_SignVerifyLengthBoundaries(t *testing.T) {
+	// Fixed test seed: 32 bytes (0x01, 0x02, ..., 0x20)
 	var katSeed [32]byte
 	for i := 0; i < 32; i++ {
 		katSeed[i] = byte(i + 1)
@@ -154,7 +160,7 @@ func TestPQSig_FIPS204_KnownAnswerVector(t *testing.T) {
 		t.Fatalf("PublicKey length mismatch: expected %d, got %d", PublicKeySize, len(pubBytes))
 	}
 
-	// Canonical message: SHA-256("ARMAX-MAINNET-FIPS204-KAT")
+	// Fixed message: SHA-256("ARMAX-MAINNET-FIPS204-KAT")
 	msgDigest := sha256.Sum256([]byte("ARMAX-MAINNET-FIPS204-KAT"))
 
 	sig, err := sk.Sign(msgDigest[:])
@@ -167,7 +173,7 @@ func TestPQSig_FIPS204_KnownAnswerVector(t *testing.T) {
 
 	// Verify valid signature
 	if !Verify(pubBytes, msgDigest[:], sig) {
-		t.Fatalf("Verify failed on canonical FIPS 204 test vector")
+		t.Fatalf("Verify failed on fixed-seed round-trip signature")
 	}
 
 	// Boundary & Negative Tests:
@@ -195,5 +201,5 @@ func TestPQSig_FIPS204_KnownAnswerVector(t *testing.T) {
 		t.Fatalf("Verify accepted undersized signature")
 	}
 
-	t.Logf("[OK] FIPS 204 ML-DSA-65 known answer test and boundary size validations passed.")
+	t.Logf("[OK] ML-DSA-65 round-trip and boundary size validations passed.")
 }
