@@ -51,6 +51,7 @@ type Blockchain struct {
 	db               *bolt.DB                 `json:"-"`
 	undoLock         sync.RWMutex             `json:"-"` // protects undoHistory [HIGH-01]
 	undoHistory      map[int]*BlockUndoRecord `json:"-"`
+	reorgMu          sync.Mutex               `json:"-"` // serializes ResolveFork so undo rollbacks never interleave; acquired before Lock
 	storeFailed      bool                     `json:"-"`
 	pendingLock      sync.RWMutex             `json:"-"`
 	pendingSpent     map[string]int64         `json:"-"`
