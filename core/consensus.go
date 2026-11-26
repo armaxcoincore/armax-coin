@@ -687,10 +687,21 @@ func (bc *Blockchain) ValidateAndAddBlockWithError(newBlock Block) (bool, error)
 }
 
 // ResolveChain resolves blockchain forks using the Satoshi Cumulative Proof-of-Work (Chainwork) rule,
+// resolveForkRollbackStepHook, when non-nil, runs after each undo record is applied during the
+// ResolveFork state rollback. Only in-package tests set it, to exercise overlapping reorganizations.
+var resolveForkRollbackStepHook func(height int)
+
 // ResolveFork reorganizes the local blockchain to a candidate fork branch starting at ancestorIndex [C-24].
 // It rolls back the state using undo records, validates ONLY the candidate blocks in newBlocks,
 // enforces the Satoshi cumulative chainwork rule, bounded reorg depth (<= 720), and atomic state updates.
+//
+// Reorganizations are serialized by reorgMu: the undo rollback runs outside bc.Lock, and a second
+// reorganization committing in the middle of it would replace undo records the first one has not
+// read yet, mixing records from two branches into the rolled-back state.
 func (bc *Blockchain) ResolveFork(ancestorIndex int, newBlocks []Block) error {
+	bc.reorgMu.Lock()
+	defer bc.reorgMu.Unlock()
+
 	bc.Lock.RLock()
 	localLen := len(bc.Chain)
 	if ancestorIndex < 0 || ancestorIndex >= localLen {
@@ -770,6 +781,9 @@ func (bc *Blockchain) ResolveFork(ancestorIndex int, newBlocks []Block) error {
 				} else {
 					clonedState.Accounts[hexAddr] = cloneAccountState(prevAcc)
 				}
+			}
+			if resolveForkRollbackStepHook != nil {
+				resolveForkRollbackStepHook(h)
 			}
 		} else {
 			// Fallback: Rebuild state up to ancestorIndex if undo records unavailable
