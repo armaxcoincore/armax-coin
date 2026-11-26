@@ -169,6 +169,28 @@ func GetCurrentDAAEngineName(blockIndex int) string {
 	return "LWMA-1 (N=60)"
 }
 
+// GetCurrentPoWAlgo returns the canonical identifier of the PoW algorithm active at blockIndex ("sha256d", "armaxhash", or "armaxhash-v2").
+func GetCurrentPoWAlgo(blockIndex int) string {
+	if IsArmaxHashV2Active(blockIndex) {
+		return "armaxhash-v2"
+	}
+	if IsArmaxHashActive(blockIndex) {
+		return "armaxhash"
+	}
+	return "sha256d"
+}
+
+// GetCurrentPoWAlgoName returns the human-readable display name of the PoW algorithm active at blockIndex ("ArmaxHash v2", "ArmaxHash v1", or "SHA-256d").
+func GetCurrentPoWAlgoName(blockIndex int) string {
+	if IsArmaxHashV2Active(blockIndex) {
+		return "ArmaxHash v2"
+	}
+	if IsArmaxHashActive(blockIndex) {
+		return "ArmaxHash v1"
+	}
+	return "SHA-256d"
+}
+
 // GetASERTScheduleDrift calculates the active ASERT schedule drift in seconds relative to the anchor block.
 // Returns driftSeconds, isActive.
 func GetASERTScheduleDrift(chain []Block, tipIndex int) (int64, bool) {

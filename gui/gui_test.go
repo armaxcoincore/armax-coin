@@ -42,12 +42,12 @@ func TestGUIBalanceResponseGetConfirmed(t *testing.T) {
 
 // TestGUIStatsResponseJSON verifies deserialization of node stats JSON
 func TestGUIStatsResponseJSON(t *testing.T) {
-	raw := `{"height":22,"blocks":23,"peers_active":1,"peers_known":3,"difficulty":7,"network_id":"ARMX-TESTNET-1"}`
+	raw := `{"height":22,"blocks":23,"peers_active":1,"peers_known":3,"difficulty":7,"network_id":"ARMX-TESTNET-1","daa_engine":"Armax-ASERT-AW","pow_algo":"armaxhash-v2","pow_algo_name":"ArmaxHash v2"}`
 	var s StatsResponse
 	if err := json.Unmarshal([]byte(raw), &s); err != nil {
 		t.Fatalf("Unmarshal failed: %v", err)
 	}
-	if s.Height != 22 || s.Blocks != 23 || s.PeersActive != 1 || s.NetworkID != "ARMX-TESTNET-1" {
+	if s.Height != 22 || s.Blocks != 23 || s.PeersActive != 1 || s.NetworkID != "ARMX-TESTNET-1" || s.DAAEngine != "Armax-ASERT-AW" || s.PoWAlgoName != "ArmaxHash v2" {
 		t.Fatalf("Unexpected stats response values: %+v", s)
 	}
 }

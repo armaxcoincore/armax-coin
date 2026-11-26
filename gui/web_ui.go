@@ -730,7 +730,8 @@ const webUIHTML = `<!DOCTYPE html>
             <div class="kv-row"><span class="kv-key">Height</span><span id="lblNetHeight" class="kv-val">0</span></div>
             <div class="kv-row"><span class="kv-key">Peers</span><span id="lblNetPeers" class="kv-val">0 active</span></div>
             <div class="kv-row"><span class="kv-key">Difficulty</span><span id="lblNetDiff" class="kv-val">0</span></div>
-            <div class="kv-row"><span class="kv-key">Algorithm</span><span id="lblNetAlgo" class="kv-val">Armax-ASERT-AW</span></div>
+            <div class="kv-row"><span class="kv-key" title="Difficulty Adjustment Algorithm (DAA)">Difficulty Adjustment</span><span id="lblNetDAA" class="kv-val">Armax-ASERT-AW</span></div>
+            <div class="kv-row"><span class="kv-key" title="Proof-of-Work Mining Algorithm">Algorithm</span><span id="lblNetAlgo" class="kv-val">ArmaxHash v2</span></div>
             <div class="kv-row"><span class="kv-key">Mempool</span><span id="lblNetMempool" class="kv-val">0 txs</span></div>
             <div class="kv-row"><span class="kv-key">Signatures</span><span class="kv-val">ML-DSA-65</span></div>
             <div class="kv-row"><span class="kv-key">Maturity</span><span id="lblNetMaturity" class="kv-val">10 blocks</span></div>
@@ -1811,7 +1812,11 @@ async function pollStatsAndBalance() {
     document.getElementById('lblNetHeight').innerText = h.toLocaleString();
     document.getElementById('lblNetPeers').innerText = p + ' active';
     document.getElementById('lblNetDiff').innerText = (st.difficulty_formatted ? st.difficulty_formatted + ' · ' : '') + 'Diff ' + (st.difficulty || 0);
-    document.getElementById('lblNetAlgo').innerText = st.daa_engine || 'Armax-ASERT-AW';
+    if (document.getElementById('lblNetDAA')) {
+      document.getElementById('lblNetDAA').innerText = st.daa_engine || 'Armax-ASERT-AW';
+    }
+    const algoDisplay = st.pow_algo_name || st.algorithm || (st.pow_algo === 'armaxhash-v2' ? 'ArmaxHash v2' : (st.pow_algo === 'armaxhash' ? 'ArmaxHash v1' : (st.pow_algo === 'sha256d' ? 'SHA-256d' : (h >= 2500 ? 'ArmaxHash v2' : (h >= 520 ? 'ArmaxHash v1' : 'SHA-256d')))));
+    document.getElementById('lblNetAlgo').innerText = algoDisplay;
     document.getElementById('lblNetMempool').innerText = mp + ' txs';
     document.getElementById('lblNetMaturity').innerText = currentMaturity + ' blocks';
     document.getElementById('lblDiagSummary').innerText = 'Height: ' + h.toLocaleString() + ' · Peers: ' + p + ' active · Mempool: ' + mp + ' txs';
