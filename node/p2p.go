@@ -12,6 +12,7 @@ import (
 
 	"fmt"
 	"io"
+	"math"
 	"math/big"
 	"math/rand"
 	"net"
@@ -408,9 +409,11 @@ type PeerServer struct {
 	//   Level 3: tofuLock      (sync.Mutex)   - serializes in-memory pending TOFU registration
 	//   Level 4: Lock          (sync.RWMutex) - protects in-memory peer maps and fields
 	//   Level 5: stopLock      (sync.Mutex)   - listener shutdown synchronization
-	syncStateMu        sync.RWMutex
-	bestPeerHeight     int
-	bestPeerCW         *big.Int
+	syncStateMu sync.RWMutex
+	// peerTipClaims holds the latest unverified HEIGHT_RESPONSE claim per peer host. Claims expire
+	// and are discarded when the peer fails to deliver blocks, so a single peer cannot pin the
+	// sync gate closed indefinitely.
+	peerTipClaims      map[string]peerTipClaim
 	initialSyncDone    bool
 	lastSyncSuccess    time.Time
 	hasConfiguredSeeds bool
@@ -6868,35 +6871,114 @@ func (p *PeerServer) RelayTransaction(
 // lastDeepReorgWarn rate-limits the stale-branch error to once per 5 minutes (unix seconds).
 var lastDeepReorgWarn int64
 
-// updateObservedPeerTip records the highest peer chainwork/height seen across peers.
-func (p *PeerServer) updateObservedPeerTip(height int, cw *big.Int) {
+const (
+	// peerTipClaimTTL bounds how long an unrefreshed peer height claim may hold the sync gate.
+	// SyncBestPeer refreshes claims from live peers every 15s, so honest claims never age out.
+	peerTipClaimTTL = 5 * time.Minute
+	// maxPeerTipClaims caps the per-host claim table; the oldest claim is evicted when full.
+	maxPeerTipClaims = 512
+	// peerTipClaimBaseLead is the height lead over the local tip accepted regardless of tip age.
+	peerTipClaimBaseLead = 2 * core.MaxReorganizationDepth
+)
+
+// peerTipClaim is an unverified height/chainwork announcement from a single peer host.
+type peerTipClaim struct {
+	height     int
+	chainwork  *big.Int
+	observedAt time.Time
+}
+
+// peerTipClaimKey groups claims per host so one host cannot multiply its weight across ports.
+func peerTipClaimKey(peerAddress string) string {
+	host, _, err := net.SplitHostPort(peerAddress)
+	if err != nil || host == "" || host == "127.0.0.1" || host == "::1" || host == "localhost" {
+		return peerAddress
+	}
+	return host
+}
+
+// maxPlausiblePeerLead returns the largest height lead over the local tip that a peer may claim.
+// It allows blocks at up to 4x the target rate since the local tip timestamp plus a fixed margin,
+// which keeps initial block download from genesis unaffected while rejecting absurd heights.
+func maxPlausiblePeerLead(localTipTimestamp int64, now time.Time) int {
+	elapsed := now.Unix() - localTipTimestamp
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	lead := elapsed*4/core.TargetBlockTimeSeconds + int64(peerTipClaimBaseLead)
+	if lead > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	return int(lead)
+}
+
+// recordPeerTipClaim stores the latest height/chainwork claim reported by peerAddress.
+func (p *PeerServer) recordPeerTipClaim(peerAddress string, height int, cw *big.Int) {
 	if height < 0 {
 		return
 	}
+	key := peerTipClaimKey(peerAddress)
+	claim := peerTipClaim{height: height, observedAt: time.Now()}
+	if cw != nil && cw.Sign() > 0 {
+		claim.chainwork = new(big.Int).Set(cw)
+	}
+
 	p.syncStateMu.Lock()
 	defer p.syncStateMu.Unlock()
-	if cw != nil && cw.Sign() > 0 {
-		if p.bestPeerCW == nil || cw.Cmp(p.bestPeerCW) > 0 || (cw.Cmp(p.bestPeerCW) == 0 && height > p.bestPeerHeight) {
-			p.bestPeerCW = new(big.Int).Set(cw)
-			p.bestPeerHeight = height
+	if p.peerTipClaims == nil {
+		p.peerTipClaims = make(map[string]peerTipClaim)
+	}
+	if _, exists := p.peerTipClaims[key]; !exists && len(p.peerTipClaims) >= maxPeerTipClaims {
+		var oldestKey string
+		var oldest time.Time
+		for k, c := range p.peerTipClaims {
+			if oldestKey == "" || c.observedAt.Before(oldest) {
+				oldestKey, oldest = k, c.observedAt
+			}
 		}
-		return
+		delete(p.peerTipClaims, oldestKey)
 	}
-	if height > p.bestPeerHeight {
-		p.bestPeerHeight = height
-	}
+	p.peerTipClaims[key] = claim
 }
 
-func (p *PeerServer) markSyncCaughtUp(height int, cw *big.Int) {
+// dropPeerTipClaim discards the claim of peerAddress, e.g. after it failed to deliver any block.
+func (p *PeerServer) dropPeerTipClaim(peerAddress string) {
+	key := peerTipClaimKey(peerAddress)
+	p.syncStateMu.Lock()
+	delete(p.peerTipClaims, key)
+	p.syncStateMu.Unlock()
+}
+
+// bestClaimedPeerHeightLocked returns the highest fresh, plausible claim from a peer that reports
+// more chainwork than the local chain (or a greater height when it reports no chainwork), pruning
+// expired entries. Caller must hold syncStateMu for writing.
+func (p *PeerServer) bestClaimedPeerHeightLocked(localHeight int, localCW *big.Int, localTipTimestamp int64, now time.Time) int {
+	best := 0
+	maxHeight := localHeight + maxPlausiblePeerLead(localTipTimestamp, now)
+	for key, c := range p.peerTipClaims {
+		if now.Sub(c.observedAt) > peerTipClaimTTL {
+			delete(p.peerTipClaims, key)
+			continue
+		}
+		if c.height <= localHeight || c.height > maxHeight {
+			continue
+		}
+		if c.chainwork != nil && localCW != nil && localCW.Sign() > 0 && c.chainwork.Cmp(localCW) <= 0 {
+			continue
+		}
+		if c.height > best {
+			best = c.height
+		}
+	}
+	return best
+}
+
+// markSyncCaughtUp records a completed sync round. It never raises the observed peer height:
+// only fresh claims evaluated in GetSyncStatus can hold the sync gate.
+func (p *PeerServer) markSyncCaughtUp() {
 	p.syncStateMu.Lock()
 	p.initialSyncDone = true
 	p.lastSyncSuccess = time.Now()
-	if height > p.bestPeerHeight {
-		p.bestPeerHeight = height
-	}
-	if cw != nil && cw.Sign() > 0 && (p.bestPeerCW == nil || cw.Cmp(p.bestPeerCW) > 0) {
-		p.bestPeerCW = new(big.Int).Set(cw)
-	}
 	p.syncStateMu.Unlock()
 }
 
@@ -6927,9 +7009,14 @@ func (p *PeerServer) GetSyncStatus() SyncStatus {
 	}
 
 	localHeight := 0
+	var localTipTimestamp int64
+	var localCW *big.Int
 	if p.Blockchain != nil {
 		p.Blockchain.Lock.RLock()
-		localHeight = p.Blockchain.GetLatestBlockUnsafe().Index
+		localTip := p.Blockchain.GetLatestBlockUnsafe()
+		localHeight = localTip.Index
+		localTipTimestamp = localTip.Timestamp
+		localCW = p.Blockchain.GetTotalChainworkUnsafe()
 		p.Blockchain.Lock.RUnlock()
 	}
 
@@ -6944,11 +7031,11 @@ func (p *PeerServer) GetSyncStatus() SyncStatus {
 	activeSyncOps := len(p.syncingHosts)
 	p.syncMu.Unlock()
 
-	p.syncStateMu.RLock()
+	p.syncStateMu.Lock()
 	cfgSeeds := p.hasConfiguredSeeds
-	bestH := p.bestPeerHeight
+	bestH := p.bestClaimedPeerHeightLocked(localHeight, localCW, localTipTimestamp, time.Now())
 	initDone := p.initialSyncDone
-	p.syncStateMu.RUnlock()
+	p.syncStateMu.Unlock()
 
 	if cfgSeeds {
 		hasSeeds = true
@@ -7033,8 +7120,6 @@ func (p *PeerServer) SyncBestPeer() {
 	pushTargets := make(map[string]int) // peers with less chainwork than us -> their height
 	bestChainwork := new(big.Int).Set(localChainwork)
 	bestHeight := localLatest.Index
-	maxObservedHeight := localLatest.Index
-	maxObservedCW := new(big.Int).Set(localChainwork)
 
 	sem := make(chan struct{}, MaxSyncConcurrency)
 	var wg sync.WaitGroup
@@ -7088,13 +7173,10 @@ func (p *PeerServer) SyncBestPeer() {
 			if !ok {
 				peerCW = big.NewInt(0)
 			}
+			p.recordPeerTipClaim(peerAddr, hr.Height, peerCW)
 
 			mu.Lock()
 			succeeded++
-			if peerCW.Cmp(maxObservedCW) > 0 || (peerCW.Cmp(maxObservedCW) == 0 && hr.Height > maxObservedHeight) {
-				maxObservedCW = new(big.Int).Set(peerCW)
-				maxObservedHeight = hr.Height
-			}
 			if peerCW.Cmp(bestChainwork) > 0 || (peerCW.Cmp(bestChainwork) == 0 && hr.Height > bestHeight) {
 				bestChainwork = peerCW
 				bestHeight = hr.Height
@@ -7110,7 +7192,6 @@ func (p *PeerServer) SyncBestPeer() {
 
 	// If every peer failed, our own connectivity is the likely culprit: do not punish the peers.
 	if succeeded > 0 {
-		p.updateObservedPeerTip(maxObservedHeight, maxObservedCW)
 		for _, addr := range failedPeers {
 			if rerr := p.RecordPeerFailure(addr); rerr != nil {
 				core.LogDebug(core.LogCategoryNet, "Failed to persist peer store on failure for %s: %v", addr, rerr)
@@ -7124,7 +7205,7 @@ func (p *PeerServer) SyncBestPeer() {
 		p.RequestChainSync(bestPeer)
 	} else {
 		if succeeded > 0 {
-			p.markSyncCaughtUp(maxObservedHeight, maxObservedCW)
+			p.markSyncCaughtUp()
 		}
 		// No peer is ahead of us. Offer our heavier chain to peers that lack it, since a peer behind
 		// NAT cannot be reached by their own catch-up dial.
@@ -7234,7 +7315,7 @@ func (p *PeerServer) RequestChainSync(peerAddress string) {
 	if !ok {
 		peerChainwork = big.NewInt(0)
 	}
-	p.updateObservedPeerTip(hr.Height, peerChainwork)
+	p.recordPeerTipClaim(peerAddress, hr.Height, peerChainwork)
 
 	// Peer is ahead if peerChainwork > localChainwork, or if chainwork equal but height higher
 	peerIsAhead := false
@@ -7248,6 +7329,18 @@ func (p *PeerServer) RequestChainSync(peerAddress string) {
 	if peerIsAhead {
 		fmt.Printf("[P2P] Starting block sync from peer %s (Local: #%d CW:%s, Peer: #%d CW:%s)...\n",
 			peerAddress, localLatest.Index, localChainwork.String(), hr.Height, peerChainwork.String())
+
+		// A peer that claims to be ahead but delivers no block in this round loses its claim, so an
+		// inflated HEIGHT_RESPONSE cannot keep the sync gate closed after the attempt ends.
+		syncStartHeight := localLatest.Index
+		defer func() {
+			p.Blockchain.Lock.RLock()
+			syncEndHeight := p.Blockchain.GetLatestBlockUnsafe().Index
+			p.Blockchain.Lock.RUnlock()
+			if syncEndHeight <= syncStartHeight {
+				p.dropPeerTipClaim(peerAddress)
+			}
+		}()
 
 		// 2. Discover common ancestor fork point using block locators [N-14]
 		locators := p.GenerateBlockLocators()
@@ -7496,12 +7589,12 @@ func (p *PeerServer) RequestChainSync(peerAddress string) {
 			tipCW := p.Blockchain.GetTotalChainworkUnsafe()
 			p.Blockchain.Lock.RUnlock()
 			if tipIdx >= hr.Height-1 || (peerChainwork.Sign() > 0 && tipCW.Cmp(peerChainwork) >= 0) {
-				p.markSyncCaughtUp(hr.Height, peerChainwork)
+				p.markSyncCaughtUp()
 			}
 		}
 		return
 	} else {
-		p.markSyncCaughtUp(hr.Height, peerChainwork)
+		p.markSyncCaughtUp()
 		if hr.Height >= 0 && hr.Height < localLatest.Index {
 			// Remote peer is behind; stream missing blocks over a persistent connection [N-02]
 			fmt.Printf("[P2P] Remote peer %s is behind (Peer: #%d, Local: #%d). Streaming missing blocks...\n",
