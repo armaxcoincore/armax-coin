@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -166,20 +165,6 @@ func (m *PeerInspectorModel) Value(row, col int) interface{} {
 		return p.Status
 	}
 	return ""
-}
-
-func isSeedEndpoint(endpoint string, seeds []string) bool {
-	ep := strings.TrimSpace(endpoint)
-	for _, s := range seeds {
-		sc := strings.TrimSpace(s)
-		if strings.EqualFold(sc, ep) {
-			return true
-		}
-		if host, _, err := net.SplitHostPort(sc); err == nil && host != "" && strings.EqualFold(host, ep) {
-			return true
-		}
-	}
-	return false
 }
 
 // parseSafePeerInspectorRows filters raw /peers JSON via filterSafePeersJSON and hides public peer endpoints.

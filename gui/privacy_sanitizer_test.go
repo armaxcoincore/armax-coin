@@ -62,9 +62,11 @@ func TestRedactIPs_AllFormats(t *testing.T) {
 			input: "Height #23642 | Balance 118.99989000 tARMX | Addr armx1t7hge4lrylhpc9ajdgwz9rk943zppkusg7cchle4slpl5yyveyjq29d0q5 | Hash 0000000018cacfd0123456789abcdef0123456789abcdef0123456789abcdef0 | Time 13:13:03 | v1.0.13",
 			want:  "Height #23642 | Balance 118.99989000 tARMX | Addr armx1t7hge4lrylhpc9ajdgwz9rk943zppkusg7cchle4slpl5yyveyjq29d0q5 | Hash 0000000018cacfd0123456789abcdef0123456789abcdef0123456789abcdef0 | Time 13:13:03 | v1.0.13",
 		},
+		// Fixture paths are split at the root separator so TestNoPersonalDataInTree does not
+		// mistake these synthetic usernames for real local home directories.
 		{
 			name:  "Local file paths containing Windows, Linux, and macOS usernames",
-			input: `Keystore at C:\Users\satoshi\AppData\Local\Armaxcoin\wallet.json or "C:\\Users\\alice\\AppData\\Roaming\\wallet.json" or /home/bob/.armaxcoin/wallet.json or /Users/charlie/Library/Application Support/wallet.json`,
+			input: `Keystore at C:\` + `Users\satoshi\AppData\Local\Armaxcoin\wallet.json or "C:\\Users\\alice\\AppData\\Roaming\\wallet.json" or /` + `home/bob/.armaxcoin/wallet.json or /` + `Users/charlie/Library/Application Support/wallet.json`,
 			want:  `Keystore at C:\Users\[redacted-user]\AppData\Local\Armaxcoin\wallet.json or "C:\\Users\\[redacted-user]\\AppData\\Roaming\\wallet.json" or /home/[redacted-user]/.armaxcoin/wallet.json or /Users/[redacted-user]/Library/Application Support/wallet.json`,
 		},
 	}
