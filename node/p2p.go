@@ -2184,14 +2184,13 @@ func (p *PeerServer) ProcessIncomingBlock(block core.Block, remoteIP string, rem
 	if block.Index == latest.Index+1 && block.PrevHash == latest.Hash {
 		// Stage 1 Pre-check: Inexpensive validation without write lock or state clone [T2]
 		if err := p.Blockchain.PreCheckBlock(&block); err != nil {
-			p.AddBanScore(remoteIP, 20)
-			p.markBlockNegative(calcHash)
+			p.handleBlockValidationError(remoteIP, calcHash, err)
 			debugLogf("[P2P] Pre-check rejected block #%d from %s: %v", block.Index, remoteAddr, err)
 			return false
 		}
 
 		// Stage 2: Full consensus validation and state transition [T2]
-		if p.Blockchain.ValidateAndAddBlock(block) {
+		if ok, addErr := p.Blockchain.ValidateAndAddBlockWithError(block); ok {
 			p.markBlockSeen(calcHash)
 			hashPrefix := calcHash
 			if len(hashPrefix) > 16 {
@@ -2207,9 +2206,8 @@ func (p *PeerServer) ProcessIncomingBlock(block core.Block, remoteIP string, rem
 			p.processOrphanTxs()
 			return true
 		} else {
-			// Failed full validation (e.g. invalid tx signature, state double-spend)
-			p.AddBanScore(remoteIP, 20)
-			p.markBlockNegative(calcHash)
+			// Failed full validation (e.g. invalid tx signature, state double-spend, timestamp)
+			p.handleBlockValidationError(remoteIP, calcHash, addErr)
 			return false
 		}
 	} else if block.Index > latest.Index {
@@ -2554,7 +2552,10 @@ func NewPeerServer(port string, bc *core.Blockchain, opts ...string) *PeerServer
 	}
 
 	// Ensure persistent TLS identity is loaded or created for this data directory [T11]
-	instTLS, _ := EnsureNodeTLSConfig(dataDir)
+	instTLS, tlsErr := EnsureNodeTLSConfig(dataDir)
+	if tlsErr != nil && initErr == nil {
+		initErr = fmt.Errorf("failed to initialize P2P TLS identity: %w", tlsErr)
+	}
 
 	ps := &PeerServer{
 		Port:                port,
@@ -2884,6 +2885,27 @@ func (p *PeerServer) recordClockSkewViolation(ip string) {
 		if len(p.banScores) > maxBanScores {
 			p.pruneBanScoresLocked(now)
 		}
+	}
+}
+
+// handleBlockValidationError applies the unified 3-tier future-timestamp policy when
+// rejecting incoming blocks or candidate forks, falling back to +20 ban score for other errors.
+func (p *PeerServer) handleBlockValidationError(remoteIP, blockHash string, err error) {
+	if core.IsFutureTimestampError(err) {
+		skew := core.GetFutureTimestampSkew(err)
+		if skew > 600 {
+			p.AddBanScore(remoteIP, 10)
+			if blockHash != "" {
+				p.markBlockNegative(blockHash)
+			}
+		} else if skew > 30 {
+			p.recordClockSkewViolation(remoteIP)
+		}
+		return
+	}
+	p.AddBanScore(remoteIP, 20)
+	if blockHash != "" {
+		p.markBlockNegative(blockHash)
 	}
 }
 
@@ -4019,7 +4041,14 @@ func (p *PeerServer) startPeerDiscoveryGossip(cycle *serverCycle) {
 			}
 		}
 
-		peers := p.GetDialablePeers()
+		rawPeers := p.GetDialablePeers()
+		peers := make([]string, 0, len(rawPeers))
+		for _, peer := range rawPeers {
+			if p.isPeerUnreachable(peer) || p.isPeerStale(peer) {
+				continue
+			}
+			peers = append(peers, peer)
+		}
 		if len(peers) == 0 {
 			continue
 		}
@@ -4797,11 +4826,11 @@ func (p *PeerServer) processInboundFrame(sess *inboundConnSession, rawLine []byt
 		return !p.IsBanned(sess.remoteIP)
 	}
 
-	// Per-connection GET_MEMPOOL rate limit (burst 3, refill 1/20s) paired with per-IP NAT aggregate bucket.
+	// Per-connection GET_MEMPOOL rate limit (burst 3, refill 1/8s = 7.5 req/min matching per-IP bucket)
 	if msg.Type == "GET_MEMPOOL" && !p.isRateLimitDisabled() && !p.isWhitelisted(sess.remoteIP) {
 		now := time.Now()
 		if elapsed := now.Sub(sess.connMempoolLastRefill).Seconds(); elapsed > 0 {
-			sess.connMempoolTokens += elapsed * (1.0 / 20.0)
+			sess.connMempoolTokens += elapsed * (1.0 / 8.0)
 			if sess.connMempoolTokens > 3.0 {
 				sess.connMempoolTokens = 3.0
 			}
@@ -6116,7 +6145,7 @@ func (p *PeerServer) QueryPeer(
 		}
 		line, err = session.roundTrip(msgData, timeout)
 	}
-	if err != nil && reused && !p.isShuttingDown() && !isTimeoutError(err) && expectedResponseType(msg.Type) != "" {
+	if err != nil && reused && !p.isShuttingDown() && !isTimeoutError(err) && expectedResponseType(msg.Type) != "" && msg.Type != "DHT_PING" {
 		// A reused persistent socket may have closed remotely (idle timeout, NAT expiry, restart);
 		// reopen one fresh TOFU-verified session transparently for idempotent read RPCs.
 		p.dropOutboundSession(peerAddress, session)
@@ -6146,23 +6175,16 @@ func (p *PeerServer) QueryPeer(
 			probeTimeout = 2 * time.Second
 		}
 
-		// Reconnect only to verify TLS and the stored TOFU fingerprint.
-		// Do not resend the original message because the peer may have processed it.
+		// Reconnect briefly to verify TLS and the stored TOFU fingerprint, then close immediately
+		// so un-handshaked idle sockets do not remain pooled until remote handshake timeout.
 		probeConn, probeRelease, probeErr := p.DialPeer(peerAddress, probeTimeout)
 		if probeErr != nil {
 			return nil, probeErr
 		}
-
-		// Reuse the verified probe connection for future requests instead of churning sockets,
-		// while preserving the original transport error for this call.
 		if probeConn != nil {
-			if _, regErr := p.registerOutboundConnSession(peerAddress, probeConn, probeRelease); regErr != nil {
-				_ = probeConn.Close()
-				if probeRelease != nil {
-					probeRelease()
-				}
-			}
-		} else if probeRelease != nil {
+			_ = probeConn.Close()
+		}
+		if probeRelease != nil {
 			probeRelease()
 		}
 
@@ -6339,6 +6361,9 @@ func (p *PeerServer) startPeerSessionHeartbeat(cycle *serverCycle) {
 						return
 					}
 
+					if targetSess.isClosed() || p.getExistingOutboundSession(targetAddr) != targetSess {
+						return
+					}
 					response, err := p.QueryPeer(
 						targetAddr,
 						Message{
@@ -6603,6 +6628,9 @@ func (p *PeerServer) SyncMempool() {
 		if p.isShuttingDown() {
 			return
 		}
+		if p.isPeerUnreachable(peer) || p.isPeerStale(peer) {
+			continue
+		}
 		resp, err := p.QueryPeer(peer, Message{NetworkID: p.GetNetworkID(), Type: "GET_MEMPOOL"}, 3*time.Second)
 		if err == nil && resp != nil && resp.Type == "MEMPOOL_RESPONSE" {
 			var txList []core.Transaction
@@ -6635,7 +6663,14 @@ func (p *PeerServer) RebroadcastMempool() {
 	copy(mempoolCopy, p.Blockchain.Mempool[:mpLen])
 	p.Blockchain.Lock.RUnlock()
 
-	peers := p.GetDialablePeers()
+	rawPeers := p.GetDialablePeers()
+	peers := make([]string, 0, len(rawPeers))
+	for _, peer := range rawPeers {
+		if p.isPeerUnreachable(peer) || p.isPeerStale(peer) {
+			continue
+		}
+		peers = append(peers, peer)
+	}
 	if len(peers) == 0 {
 		return
 	}
@@ -7026,7 +7061,6 @@ func (p *PeerServer) SyncBestPeer() {
 			go p.pushChainToPeer(addr, h)
 		}
 	}
-	go p.SyncMempool()
 }
 
 // GenerateBlockLocators builds a sparse list of block hashes (exponential backoff)
@@ -7093,6 +7127,9 @@ func (p *PeerServer) RequestChainSync(peerAddress string) {
 	}, 5*time.Second)
 
 	if err != nil {
+		if p.isShuttingDown() || errors.Is(err, errOutboundLimitExceeded) {
+			return
+		}
 		core.LogDebug(core.LogCategorySync, "GET_HEIGHT failed peer=%s err=%v", peerAddress, err)
 		_ = p.RecordPeerFailure(peerAddress)
 		return
@@ -7231,7 +7268,7 @@ func (p *PeerServer) RequestChainSync(peerAddress string) {
 					failedPeer := syncPeer
 					recovered := false
 					for _, altPeer := range p.GetDialablePeers() {
-						if altPeer == failedPeer || altPeer == "" {
+						if altPeer == failedPeer || altPeer == "" || p.isPeerUnreachable(altPeer) || p.isPeerStale(altPeer) {
 							continue
 						}
 						core.LogInfo(core.LogCategorySync, "Attempting failover to alternative peer %s for range %d-%d", altPeer, from, to)
@@ -7349,7 +7386,7 @@ func (p *PeerServer) RequestChainSync(peerAddress string) {
 					if errSplit != nil || peerIP == "" {
 						peerIP = syncPeer
 					}
-					p.AddBanScore(peerIP, 20)
+					p.handleBlockValidationError(peerIP, "", err)
 				}
 				return
 			}

@@ -31,6 +31,7 @@ func GenerateMnemonic(numWords ...int) (string, error) {
 	}
 
 	entropy := make([]byte, entropyLen)
+	defer clear(entropy)
 	if _, err := rand.Read(entropy); err != nil {
 		return "", fmt.Errorf("failed to generate random entropy: %v", err)
 	}
@@ -126,10 +127,13 @@ func ValidateMnemonic(mnemonic string) (int, bool) {
 		entropyLen = 16
 	}
 
-	entropyBytes := total.Bytes()
+	rawEntropy := total.Bytes()
+	defer clear(rawEntropy)
+	entropyBytes := rawEntropy
 	if len(entropyBytes) < entropyLen {
 		padded := make([]byte, entropyLen)
 		copy(padded[entropyLen-len(entropyBytes):], entropyBytes)
+		defer clear(padded)
 		entropyBytes = padded
 	} else if len(entropyBytes) > entropyLen {
 		entropyBytes = entropyBytes[len(entropyBytes)-entropyLen:]

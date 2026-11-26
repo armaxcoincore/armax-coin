@@ -180,18 +180,7 @@ func (p *PeerServer) handlePushedBlocks(blocks []core.Block, remoteIP, remoteAdd
 		for _, blk := range candidateBranch {
 			ok, addErr := p.Blockchain.ValidateAndAddBlockWithError(blk)
 			if !ok {
-				if core.IsFutureTimestampError(addErr) {
-					skew := core.GetFutureTimestampSkew(addErr)
-					if skew > 600 {
-						p.AddBanScore(remoteIP, 10)
-						p.markBlockNegative(blk.Hash)
-					} else if skew > 30 {
-						p.recordClockSkewViolation(remoteIP)
-					}
-					return
-				}
-				p.AddBanScore(remoteIP, 20)
-				p.markBlockNegative(blk.Hash)
+				p.handleBlockValidationError(remoteIP, blk.Hash, addErr)
 				return
 			}
 			p.markBlockSeen(blk.Hash)
@@ -250,7 +239,7 @@ func (p *PeerServer) handlePushedBlocks(blocks []core.Block, remoteIP, remoteAdd
 
 	if err := p.Blockchain.ResolveFork(effectiveAncestor, candidateBranch); err != nil {
 		if !strings.Contains(err.Error(), "chainwork") {
-			p.AddBanScore(remoteIP, 20)
+			p.handleBlockValidationError(remoteIP, "", err)
 		}
 		debugLogf("[P2P] PUSH_BLOCKS from %s not applied: %v", remoteAddr, err)
 		return

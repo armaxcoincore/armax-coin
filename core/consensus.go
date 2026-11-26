@@ -1,11 +1,14 @@
 package core
 
 import (
+	"flag"
 	"fmt"
 	"math/big"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/armaxcoincore/armax-coin/core/pqsig"
 )
 
 const (
@@ -25,14 +28,14 @@ var Checkpoints = map[int]string{
 var checkpointOverrideHook func() map[int]string
 
 // GetCheckpointsForNetwork returns the immutable checkpoint mapping for a specific network ID.
-// If an active test override hook is installed, it takes precedence.
+// If an active non-Mainnet test override hook is installed under 'go test', it takes precedence.
 func GetCheckpointsForNetwork(netID string) map[int]string {
-	if checkpointOverrideHook != nil {
+	canon := strings.ToUpper(strings.TrimSpace(netID))
+	if checkpointOverrideHook != nil && !GetActiveNetwork().IsMainnet && canon != "ARMX-MAINNET-1" && canon != "MAINNET" && flag.Lookup("test.v") != nil {
 		if override := checkpointOverrideHook(); override != nil {
 			return override
 		}
 	}
-	canon := strings.ToUpper(strings.TrimSpace(netID))
 	switch canon {
 	case "ARMX-MAINNET-1", "MAINNET":
 		if len(MainnetProfile.Checkpoints) > 0 {
@@ -153,6 +156,13 @@ func CalculateMedianTimePastN(chain []Block, upToIndex int, window int) int64 {
 	return timestamps[len(timestamps)/2]
 }
 
+func isStrictCoinbaseConsensusActive(netID string) bool {
+	if strings.EqualFold(strings.TrimSpace(netID), MainnetProfile.NetworkID) {
+		return true
+	}
+	return GetActiveNetwork().IsMainnet
+}
+
 // validateBlockContext performs comprehensive header, contextual, PoW, MTP-11, and size validation
 // shared identically between ValidateAndAddBlock and ResolveChain [C-04, C-05, C-06, C-18, T13].
 func validateBlockContext(b *Block, prev *Block, chainHistory []Block, isHistorical ...bool) error {
@@ -220,10 +230,18 @@ func validateBlockContext(b *Block, prev *Block, chainHistory []Block, isHistori
 	if !MatchAddress(b.Miner, coinbaseRecipient) {
 		return fmt.Errorf("block #%d miner mismatch: header miner '%s' does not match coinbase recipient '%s'", b.Index, b.Miner, coinbaseRecipient)
 	}
+	if isStrictCoinbaseConsensusActive(chainNetID) {
+		if cb := b.Transactions[0]; (cb.Type != "" && cb.Type != TxTypeStandard) || (cb.SigAlg != 0 && cb.SigAlg != pqsig.SigAlgMLDSA65) || cb.HashLock != "" || cb.TimeLock != 0 || cb.Preimage != "" {
+			return fmt.Errorf("block #%d coinbase must not carry invalid type, sig_alg, or HTLC/extended fields", b.Index)
+		}
+	}
 
-	// 2. Duplicate transaction check within the block [C-18]
+	// 2. Duplicate transaction and unsupported script field checks within the block [C-18]
 	seenTxs := make(map[string]struct{}, len(b.Transactions))
 	for idx, tx := range b.Transactions {
+		if idx > 0 && ((tx.Type != "" && tx.Type != TxTypeStandard) || tx.HashLock != "" || tx.TimeLock != 0 || tx.Preimage != "") {
+			return fmt.Errorf("block #%d tx #%d carries unsupported type or HTLC/extended fields", b.Index, idx)
+		}
 		h := tx.HashHexForNetwork(chainNetID)
 		if _, exists := seenTxs[h]; exists {
 			return fmt.Errorf("duplicate transaction %s at index #%d", h, idx)
@@ -379,7 +397,11 @@ func (bc *Blockchain) validateBlockAgainstStateLocked(
 		return err
 	}
 
-	blockReward := bc.GetBlockReward(newBlock.Index)
+	supply := bc.cachedSupply
+	if supply <= 0 && len(bc.Chain) > 0 {
+		supply = CalculateCirculatingSupply(bc.Chain)
+	}
+	blockReward := CalculateBlockRewardGivenSupply(newBlock.Index, supply)
 
 	if err := state.VerifyAndApplyBlock(
 		&newBlock,
@@ -424,12 +446,19 @@ func (bc *Blockchain) PreCheckBlock(b *Block) error {
 	if !MatchAddress(b.Miner, coinbaseRecipient) {
 		return fmt.Errorf("block #%d miner mismatch: header miner '%s' does not match coinbase recipient '%s'", b.Index, b.Miner, coinbaseRecipient)
 	}
-
 	chainNetID := bc.GetNetworkID()
+	if isStrictCoinbaseConsensusActive(chainNetID) {
+		if cb := b.Transactions[0]; (cb.Type != "" && cb.Type != TxTypeStandard) || (cb.SigAlg != 0 && cb.SigAlg != pqsig.SigAlgMLDSA65) || cb.HashLock != "" || cb.TimeLock != 0 || cb.Preimage != "" {
+			return fmt.Errorf("block #%d coinbase must not carry invalid type, sig_alg, or HTLC/extended fields", b.Index)
+		}
+	}
 
-	// 3. Duplicate transactions within the block [C-18]
+	// 3. Duplicate transactions and unsupported script field checks within the block [C-18]
 	seenTxs := make(map[string]struct{}, len(b.Transactions))
 	for idx, tx := range b.Transactions {
+		if idx > 0 && ((tx.Type != "" && tx.Type != TxTypeStandard) || tx.HashLock != "" || tx.TimeLock != 0 || tx.Preimage != "") {
+			return fmt.Errorf("block #%d tx #%d carries unsupported type or HTLC/extended fields", b.Index, idx)
+		}
 		h := tx.HashHexForNetwork(chainNetID)
 		if _, exists := seenTxs[h]; exists {
 			return fmt.Errorf("duplicate transaction %s at index #%d", h, idx)
@@ -873,14 +902,38 @@ func (bc *Blockchain) ResolveFork(ancestorIndex int, newBlocks []Block) error {
 	}
 	bc.undoLock.Unlock()
 
+	// Re-inject valid unconfirmed orphaned txs BEFORE existing mempool entries so lower nonces
+	// from rolled-back blocks are evaluated before higher pending nonces already in mempool.
+	// Defer MaxMempoolSize capping until after CleanMempoolLocked() so state-invalid orphans cannot
+	// crowd out valid pending transactions.
+	requeued := make([]Transaction, 0, len(orphanedTxs)+len(bc.Mempool))
+	seenRequeue := make(map[string]struct{}, len(orphanedTxs)+len(bc.Mempool))
 	for _, oTx := range orphanedTxs {
-		if _, confirmed := candidateTxMap[oTx.HashHex()]; !confirmed {
-			// [F6-PERF] Cryptographic signature verification for orphaned transactions re-entering mempool
-			if oTx.Verify() {
-				bc.Mempool = append(bc.Mempool, oTx)
-			}
+		oHash := oTx.HashHex()
+		if _, confirmed := candidateTxMap[oHash]; confirmed {
+			continue
+		}
+		if _, seen := seenRequeue[oHash]; seen {
+			continue
+		}
+		// [F6-PERF] Cryptographic signature verification for orphaned transactions re-entering mempool
+		if oTx.Verify() {
+			requeued = append(requeued, oTx)
+			seenRequeue[oHash] = struct{}{}
 		}
 	}
+	for _, mTx := range bc.Mempool {
+		mHash := mTx.HashHex()
+		if _, confirmed := candidateTxMap[mHash]; confirmed {
+			continue
+		}
+		if _, seen := seenRequeue[mHash]; seen {
+			continue
+		}
+		requeued = append(requeued, mTx)
+		seenRequeue[mHash] = struct{}{}
+	}
+	bc.Mempool = requeued
 
 	// Replace active chain and state atomically using a fresh slice backing array
 	nextChain := append([]Block(nil), bc.Chain[:ancestorIndex+1]...)
@@ -912,6 +965,10 @@ func (bc *Blockchain) ResolveFork(ancestorIndex int, newBlocks []Block) error {
 	bc.BlockReward = CalculateBlockRewardGivenSupply(len(bc.Chain), runningSupply)
 
 	bc.CleanMempoolLocked()
+	if len(bc.Mempool) > MaxMempoolSize {
+		bc.Mempool = bc.Mempool[:MaxMempoolSize]
+		bc.CleanMempoolLocked()
+	}
 	if !bc.storeFailed && bc.StoragePath != "IN_MEMORY" && (bc.db != nil || bc.StoragePath != "") {
 		if err := bc.saveToFileFrom(ancestorIndex + 1); err != nil {
 			bc.Chain = prevChain

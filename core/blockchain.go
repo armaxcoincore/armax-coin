@@ -291,6 +291,12 @@ func (bc *Blockchain) RebuildState() error {
 
 // CalculateBlockRewardGivenSupply computes block reward based on block index and current circulating supply in O(1)
 func CalculateBlockRewardGivenSupply(blockIndex int, currentSupply int64) int64 {
+	if blockIndex < 0 {
+		return 0
+	}
+	if currentSupply < 0 {
+		currentSupply = 0
+	}
 	halvings := blockIndex / HalvingInterval
 	if halvings >= 64 {
 		return 0
@@ -324,16 +330,21 @@ func (bc *Blockchain) GetCirculatingSupply() int64 {
 // CalculateCirculatingSupply deterministically sums the block rewards of a chain without counting recycled fees
 func CalculateCirculatingSupply(chain []Block) int64 {
 	var total int64 = 0
-	for _, block := range chain {
-		halvings := block.Index / HalvingInterval
-		if halvings < 64 {
-			reward := InitialReward >> halvings
-			if total+reward > MaxSupply {
-				total = MaxSupply
-				break
-			}
-			total += reward
+	for i := range chain {
+		block := &chain[i]
+		if block.Index < 0 {
+			continue
 		}
+		maxReward := CalculateBlockRewardGivenSupply(block.Index, total)
+		minted := maxReward
+		if len(block.Transactions) > 0 {
+			minted = BlockMintedSubsidy(block, maxReward)
+		}
+		if total+minted > MaxSupply {
+			total = MaxSupply
+			break
+		}
+		total += minted
 	}
 	return total
 }
@@ -512,9 +523,14 @@ func (bc *Blockchain) AddTransaction(tx Transaction) (bool, string) {
 		return false, "Rejected: Transaction amount must be greater than 0"
 	}
 
-	minMempoolFee := CalculateMinMempoolFee(tx.Size())
+	preNextHeight := 1
+	if h := bc.GetHeight(); h >= 0 {
+		preNextHeight = h + 1
+	}
+	preFeeSize := FeeEffectiveTxSize(&tx, preNextHeight)
+	minMempoolFee := CalculateMinMempoolFee(preFeeSize)
 	if tx.Fee < minMempoolFee {
-		return false, fmt.Sprintf("Rejected: Transaction fee %d is below required relay fee (%d Armoids for %d bytes)", tx.Fee, minMempoolFee, tx.Size())
+		return false, fmt.Sprintf("Rejected: Transaction fee %d is below required relay fee (%d Armoids for %d bytes)", tx.Fee, minMempoolFee, preFeeSize)
 	}
 
 	if tx.Amount > MaxSupply {
@@ -537,6 +553,12 @@ func (bc *Blockchain) AddTransaction(tx Transaction) (bool, string) {
 		return false, "Rejected: Self-transfer transactions are prohibited"
 	}
 
+	if GetActiveNetwork().IsMainnet {
+		if err := tx.ValidateCanonicalHex(); err != nil {
+			return false, fmt.Sprintf("Rejected: %v", err)
+		}
+	}
+
 	// 3. Cryptographic Signature verification (ML-DSA-65 NIST FIPS 204) before taking write lock [T5]
 	if !tx.Verify() {
 		return false, "Rejected: Digital signature is invalid or does not match public key"
@@ -545,6 +567,19 @@ func (bc *Blockchain) AddTransaction(tx Transaction) (bool, string) {
 	// Stateful validation and mempool modifications under global write lock [T5]
 	bc.Lock.Lock()
 	defer bc.Lock.Unlock()
+
+	nextHeight := 1
+	if len(bc.Chain) > 0 {
+		nextHeight = bc.Chain[len(bc.Chain)-1].Index + 1
+	}
+	txEffSize := EffectiveTxSize(&tx, nextHeight)
+	if txEffSize <= 0 || txEffSize > MaxTxSize {
+		return false, fmt.Sprintf("Rejected: Transaction effective size (%d bytes) exceeds MaxTxSize (%d bytes)", txEffSize, MaxTxSize)
+	}
+	txFeeSize := FeeEffectiveTxSize(&tx, nextHeight)
+	if minFeeLocked := CalculateMinMempoolFee(txFeeSize); tx.Fee < minFeeLocked {
+		return false, fmt.Sprintf("Rejected: Transaction fee %d is below required relay fee (%d Armoids for %d bytes)", tx.Fee, minFeeLocked, txFeeSize)
+	}
 
 	// 4. Rate-limit unconfirmed pending transactions per sender [C-16, C-20]
 	bc.pendingLock.RLock()
@@ -577,12 +612,13 @@ func (bc *Blockchain) AddTransaction(tx Transaction) (bool, string) {
 
 	// 7. Mempool capacity protection with tail-only fee eviction [C-16, C-21]
 	// Eviction occurs strictly AFTER full validation to ensure invalid txs cannot evict honest ones.
-	// Only tail transactions (highest nonce per sender) are eligible for eviction to preserve nonce continuity.
+	// Only tail transactions (highest nonce per sender) of OTHER senders are eligible for eviction so
+	// admitting N+1 can never evict the incoming sender's own prerequisite nonce N transaction.
 	if len(bc.Mempool) >= MaxMempoolSize {
 		tailIndices := make(map[string]int) // senderHex -> index in Mempool
 		for i, mTx := range bc.Mempool {
 			sHex, err := AddressToHex(mTx.Sender)
-			if err != nil {
+			if err != nil || sHex == senderHex {
 				continue
 			}
 			if prevIdx, ok := tailIndices[sHex]; !ok {
@@ -1325,65 +1361,8 @@ func (bc *Blockchain) IsChainValid() bool {
 		currentBlock := bc.Chain[i]
 		prevBlock := bc.Chain[i-1]
 
-		if EffectiveBlockSize(&currentBlock) > MaxBlockSize {
+		if err := validateBlockContext(&currentBlock, &prevBlock, bc.Chain[:i], true); err != nil {
 			return false
-		}
-		for idx := range currentBlock.Transactions {
-			if EffectiveTxSize(&currentBlock.Transactions[idx], currentBlock.Index) > MaxTxSize {
-				return false
-			}
-		}
-
-		if currentBlock.Index != prevBlock.Index+1 {
-			return false
-		}
-		if currentBlock.PrevHash != prevBlock.Hash {
-			return false
-		}
-		if len(currentBlock.Transactions) == 0 || len(currentBlock.Transactions) > MaxBlockTransactions {
-			return false
-		}
-		if currentBlock.Miner != "" {
-			if !ValidateAddress(currentBlock.Miner) || !MatchAddress(currentBlock.Miner, currentBlock.Transactions[0].Recipient) {
-				return false
-			}
-		}
-
-		seenTxs := make(map[string]struct{}, len(currentBlock.Transactions))
-		for _, tx := range currentBlock.Transactions {
-			h := tx.HashHexForNetwork(chainNetID)
-			if _, dup := seenTxs[h]; dup {
-				return false
-			}
-			seenTxs[h] = struct{}{}
-		}
-
-		if currentBlock.MerkleRoot != CalculateMerkleRootForNetwork(currentBlock.Transactions, chainNetID) {
-			return false
-		}
-		calcHash, err := currentBlock.CalculateHashWithError()
-		if err != nil || currentBlock.Hash == "" || currentBlock.Hash != calcHash {
-			return false
-		}
-
-		expectedTarget := CalculateExpectedTargetForCandidate(bc.Chain[:i], currentBlock.Index, currentBlock.Timestamp)
-		expectedTargetHex := fmt.Sprintf("%064x", expectedTarget)
-		if currentBlock.Target != "" && currentBlock.Target != expectedTargetHex {
-			return false
-		}
-		if !HashMeetsTarget(currentBlock.Hash, expectedTarget) {
-			return false
-		}
-
-		if err := validateBlockTimestampRules(&currentBlock, &prevBlock, bc.Chain[:i]); err != nil {
-			return false
-		}
-
-		chainNetID := bc.GetNetworkID()
-		if expectedHash, exists := GetCheckpointForNetwork(chainNetID, currentBlock.Index); exists {
-			if currentBlock.Hash != expectedHash {
-				return false
-			}
 		}
 
 		reward := CalculateBlockRewardGivenSupply(currentBlock.Index, runningSupply)

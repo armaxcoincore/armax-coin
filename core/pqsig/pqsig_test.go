@@ -90,6 +90,13 @@ func TestPQSig_SignAndVerify(t *testing.T) {
 
 // TestPQSig_GoldenDeterministicDerivation protects against library or parameter changes.
 func TestPQSig_GoldenDeterministicDerivation(t *testing.T) {
+	if _, err := DeriveSeedFromBIP39(nil, 0); err == nil {
+		t.Fatal("DeriveSeedFromBIP39 accepted nil seed")
+	}
+	if _, err := DeriveSeedFromBIP39(make([]byte, 16), 0); err == nil {
+		t.Fatal("DeriveSeedFromBIP39 accepted truncated 16-byte seed")
+	}
+
 	// 64-byte BIP-39 simulated seed
 	bip39Seed := bytes.Repeat([]byte{0x42}, 64)
 

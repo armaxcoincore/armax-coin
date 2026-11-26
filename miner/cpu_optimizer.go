@@ -4,6 +4,8 @@ import (
 	"runtime"
 	"sync/atomic"
 	"time"
+
+	"github.com/armaxcoincore/armax-coin/core"
 )
 
 // ============================================================================
@@ -123,6 +125,9 @@ func (e *SlidingEMA) CurrentEMA() float64 {
 // heavy thermal throttling. Defaulting to physical cores sustains maximum Turbo clock.
 func GetOptimalCPUWorkerThreads(explicitThreads int) (optimalThreads int, isPhysicalOnly bool) {
 	if explicitThreads > 0 {
+		if maxAllowed := core.MaxAllowedMiningThreads(); maxAllowed > 0 && explicitThreads > maxAllowed {
+			explicitThreads = maxAllowed
+		}
 		return explicitThreads, false
 	}
 

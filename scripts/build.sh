@@ -1,6 +1,7 @@
 #!/bin/bash
 set -e
 
+export CGO_ENABLED="${CGO_ENABLED:-0}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 mkdir -p bin
@@ -10,19 +11,19 @@ echo "  COMPILING ARMAXCOIN (ARMX) ECOSYSTEM"
 echo "=================================================="
 
 echo "[+] Compiling Daemon Node (bin/armcoind)..."
-go build -ldflags="-s -w" -o bin/armcoind main.go
+go build -trimpath -ldflags="-s -w -buildid=" -o bin/armcoind main.go
 
 echo "[+] Compiling Miner (bin/armminer)..."
-go build -ldflags="-s -w" -o bin/armminer ./miner
+go build -trimpath -ldflags="-s -w -buildid=" -o bin/armminer ./miner
 
 echo "[+] Compiling Transaction Sender CLI (bin/armsend)..."
-go build -ldflags="-s -w" -o bin/armsend ./cli/armsend
+go build -trimpath -ldflags="-s -w -buildid=" -o bin/armsend ./cli/armsend
 
 echo "[+] Compiling Wallet Manager CLI (bin/armwallet)..."
-go build -ldflags="-s -w" -o bin/armwallet ./cli/armwallet
+go build -trimpath -ldflags="-s -w -buildid=" -o bin/armwallet ./cli/armwallet
 
 echo "[+] Compiling Desktop GUI Wallet (bin/armgui)..."
-go build -ldflags="-s -w" -o bin/armgui ./gui
+go build -trimpath -ldflags="-s -w -buildid=" -o bin/armgui ./gui
 
 echo "=================================================="
 echo "[OK] ALL BINARIES SUCCESSFULLY COMPILED into bin/!"

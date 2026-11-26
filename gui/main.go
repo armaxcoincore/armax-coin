@@ -501,9 +501,12 @@ func queryNonceAndSignGUITransaction(
 		return nil, 0, "RPC Error", msg, errors.New(msg)
 	}
 
-	avail := bal.PendingBalance
-	if avail == 0 {
-		avail = bal.GetConfirmed()
+	avail := bal.SpendableBalance
+	if bal.ImmatureBalance == 0 && avail == 0 {
+		avail = bal.PendingBalance
+		if avail == 0 {
+			avail = bal.GetConfirmed()
+		}
 	}
 	if avail < amtArmoids+feeArmoids {
 		msg := fmt.Sprintf("Total required: %s\nAvailable balance: %s", formatArmx(amtArmoids+feeArmoids), formatArmx(avail))
@@ -597,7 +600,7 @@ func executeConsoleCommand(rawCmd string, targetRPCURL string, expectedNetID str
 	case "getpeerinfo":
 		path = "/peers"
 	case "getbalance":
-		addr := activeAddress
+		_, addr := getActiveWalletMeta()
 		if len(fields) > 1 {
 			addr = fields[1]
 		}
@@ -606,7 +609,7 @@ func executeConsoleCommand(rawCmd string, targetRPCURL string, expectedNetID str
 		}
 		path = "/balance?address=" + url.QueryEscape(addr)
 	case "gethistory":
-		addr := activeAddress
+		_, addr := getActiveWalletMeta()
 		if len(fields) > 1 {
 			addr = fields[1]
 		}

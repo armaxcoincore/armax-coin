@@ -44,6 +44,7 @@ func IsKeystoreUsingLegacyPassphrase(filePath string) bool {
 	legacy := GetLegacyDefaultPassphrase()
 	w, err := DecryptAndLoadKeystore(legacy, filePath)
 	if err == nil && w != nil {
+		w.Zeroize()
 		return true
 	}
 	return false
@@ -65,6 +66,7 @@ func MigrateKeystorePassphrase(filePath, oldPassphrase, newPassphrase string) (*
 	}
 
 	if err := EncryptAndSaveKeystore(w, newPassphrase, filePath); err != nil {
+		w.Zeroize()
 		return nil, fmt.Errorf("failed to save migrated keystore: %w", err)
 	}
 
@@ -130,22 +132,38 @@ func (w *Wallet) ClearMnemonic() {
 	}
 }
 
-// EstimateMinMempoolFee calculates the required minimum fee for a standard transaction
-// signed by the provided wallet [L3-1].
-func EstimateMinMempoolFee(w *Wallet, recipient string, amount, nonce int64) int64 {
+// TypicalTxEffectiveSize returns the relay-fee effective typical transaction byte size at blockHeight
+// (~5,320 B binary weight when MempoolBinaryFeeActivationHeight is active, or ~10,800 B legacy JSON prior).
+func TypicalTxEffectiveSize(blockHeight int) int {
+	if core.IsMempoolBinaryFeeActive(blockHeight) {
+		return 5320
+	}
+	return 10800
+}
+
+// EstimateMinMempoolFeeAtHeight calculates the required minimum fee for a standard transaction
+// signed by the provided wallet evaluated at blockHeight using canonical FeeEffectiveTxSize.
+func EstimateMinMempoolFeeAtHeight(w *Wallet, recipient string, amount, nonce int64, blockHeight int) int64 {
+	fallbackFee := core.CalculateMinMempoolFee(TypicalTxEffectiveSize(blockHeight))
 	if w == nil || w.PrivateKey == nil {
-		return 11000 // Safe default minimum for ~10.8KB ML-DSA-65 post-quantum tx
+		return fallbackFee
 	}
 	dummy := core.Transaction{
 		Sender:    w.Address,
 		SenderPub: w.PublicKey,
 		Recipient: recipient,
 		Amount:    amount,
-		Fee:       0,
+		Fee:       fallbackFee,
 		Nonce:     nonce,
 	}
 	if err := dummy.Sign(w.PrivateKey); err != nil {
-		return 11000
+		return fallbackFee
 	}
-	return core.CalculateMinMempoolFee(dummy.Size())
+	return core.CalculateMinMempoolFee(core.FeeEffectiveTxSize(&dummy, blockHeight))
+}
+
+// EstimateMinMempoolFee calculates the required minimum fee for a standard transaction
+// signed by the provided wallet [L3-1].
+func EstimateMinMempoolFee(w *Wallet, recipient string, amount, nonce int64) int64 {
+	return EstimateMinMempoolFeeAtHeight(w, recipient, amount, nonce, 0)
 }

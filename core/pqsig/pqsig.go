@@ -89,6 +89,9 @@ func Verify(pubBytes []byte, msg []byte, sig []byte) bool {
 // using HKDF-SHA256(salt="armax-pqc-v1", info="ml-dsa-65/account/<index>")
 func DeriveSeedFromBIP39(bip39Seed []byte, accountIndex uint32) ([32]byte, error) {
 	var seed32 [32]byte
+	if len(bip39Seed) < SeedSize {
+		return seed32, fmt.Errorf("bip39 seed too short: got %d bytes, require at least %d", len(bip39Seed), SeedSize)
+	}
 	salt := []byte("armax-pqc-v1")
 	info := []byte(fmt.Sprintf("ml-dsa-65/account/%d", accountIndex))
 

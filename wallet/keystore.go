@@ -87,6 +87,76 @@ type KeystoreFile struct {
 	Crypto    CryptoJSON `json:"crypto"`
 }
 
+func writeFileAtomic0600(filePath string, data []byte, tmpPattern string) error {
+	dir := filepath.Dir(filePath)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return fmt.Errorf("failed to create directory: %w", err)
+		}
+	}
+	if tmpPattern == "" {
+		tmpPattern = "wallet-*.tmp"
+	}
+
+	tmpFile, err := os.CreateTemp(dir, tmpPattern)
+	if err != nil {
+		return fmt.Errorf("failed to create temporary file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer func() {
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := os.Chmod(tmpPath, 0600); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to set 0600 permissions on temporary file: %w", err)
+	}
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to write file data: %w", err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to sync file to disk: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temporary file: %w", err)
+	}
+	if err := os.Rename(tmpPath, filePath); err != nil {
+		// F-02: Retain any existing destination file intact on rename failure.
+		return fmt.Errorf("failed to atomically commit file: %w", err)
+	}
+	tmpPath = ""
+	_ = os.Chmod(filePath, 0600)
+	return nil
+}
+
+func readBoundedFile(filePath string, maxBytes int64) ([]byte, error) {
+	fi, err := os.Stat(filePath)
+	if err != nil {
+		return nil, err
+	}
+	if fi.Size() > maxBytes {
+		return nil, fmt.Errorf("file size (%d bytes) exceeds maximum limit (%d bytes)", fi.Size(), maxBytes)
+	}
+	f, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("file exceeds maximum size limit of %d bytes", maxBytes)
+	}
+	return data, nil
+}
+
 // EncryptAndSaveKeystore encrypts the 32-byte seed using Argon2id + AES-256-GCM and saves to disk
 // atomically with strict 0600 permissions, ensuring safe permission enforcement even on overwrite [P2-3, Phase 3].
 func EncryptAndSaveKeystore(w *Wallet, passphrase, filePath string) error {
@@ -151,50 +221,9 @@ func EncryptAndSaveKeystore(w *Wallet, passphrase, filePath string) error {
 	}
 
 	// Atomic write using temporary file in the same directory [Phase 3]
-	dir := filepath.Dir(filePath)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return fmt.Errorf("failed to create keystore directory: %w", err)
+	if err := writeFileAtomic0600(filePath, data, "wallet-*.tmp"); err != nil {
+		return err
 	}
-
-	tmpFile, err := os.CreateTemp(dir, "wallet-*.tmp")
-	if err != nil {
-		return fmt.Errorf("failed to create temporary keystore file: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-	defer func() {
-		if tmpPath != "" {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-
-	if err := os.Chmod(tmpPath, 0600); err != nil {
-		_ = tmpFile.Close()
-		return fmt.Errorf("failed to set 0600 permissions on temporary keystore: %w", err)
-	}
-
-	if _, err := tmpFile.Write(data); err != nil {
-		_ = tmpFile.Close()
-		return fmt.Errorf("failed to write keystore data: %w", err)
-	}
-
-	if err := tmpFile.Sync(); err != nil {
-		_ = tmpFile.Close()
-		return fmt.Errorf("failed to sync keystore to disk: %w", err)
-	}
-
-	if err := tmpFile.Close(); err != nil {
-		return fmt.Errorf("failed to close temporary keystore: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, filePath); err != nil {
-		// F-02: Do NOT speculatively delete the existing file on rename failure.
-		// Retain the existing file intact and return the failure error.
-		return fmt.Errorf("failed to atomically commit keystore file: %w", err)
-	}
-	tmpPath = "" // Rename succeeded, disarm defer cleanup
-
-	// Ensure final permissions are strictly 0600 even if file already existed
-	_ = os.Chmod(filePath, 0600)
 
 	return nil
 }
@@ -207,24 +236,12 @@ func CreateNewWalletKeystore(w *Wallet, passphrase, filePath string, force bool)
 	if _, err := os.Stat(filePath); err == nil {
 		if !force {
 			backupPath = fmt.Sprintf("%s.backup.%d", filePath, time.Now().UnixNano())
-			data, err := os.ReadFile(filePath)
+			data, err := readBoundedFile(filePath, MaxKeystoreFileSize)
 			if err != nil {
 				return "", fmt.Errorf("failed to read existing wallet for backup: %w", err)
 			}
-			bf, err := os.OpenFile(backupPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-			if err != nil {
-				return "", fmt.Errorf("failed to create wallet backup at %s: %w", backupPath, err)
-			}
-			if _, err := bf.Write(data); err != nil {
-				_ = bf.Close()
+			if err := writeFileAtomic0600(backupPath, data, ".wallet-backup-*.tmp"); err != nil {
 				return "", fmt.Errorf("failed to write wallet backup at %s: %w", backupPath, err)
-			}
-			if err := bf.Sync(); err != nil {
-				_ = bf.Close()
-				return "", fmt.Errorf("failed to sync wallet backup at %s: %w", backupPath, err)
-			}
-			if err := bf.Close(); err != nil {
-				return "", fmt.Errorf("failed to close wallet backup at %s: %w", backupPath, err)
 			}
 		}
 	}
