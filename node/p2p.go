@@ -554,6 +554,43 @@ func isBenignDisconnectErr(err error) bool {
 		strings.Contains(msg, "eof")
 }
 
+// classifyInboundDisconnectReason categorizes an inbound read error into a concise observability label.
+func classifyInboundDisconnectReason(err error, readTimeout time.Duration, framesProcessed int) string {
+	if err == nil {
+		return "normal_close"
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return "remote_eof"
+	}
+	if errors.Is(err, net.ErrClosed) {
+		return "local_closed"
+	}
+	if isTimeoutError(err) {
+		if readTimeout == InboundHandshakeTimeout && framesProcessed == 0 {
+			return "handshake_timeout"
+		}
+		if readTimeout == AuthenticatedIdleTimeout {
+			return "idle_timeout"
+		}
+		return "read_timeout"
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "eof"):
+		return "remote_eof"
+	case strings.Contains(msg, "connection reset") || strings.Contains(msg, "forcibly closed") || strings.Contains(msg, "broken pipe"):
+		return "peer_reset"
+	case strings.Contains(msg, "closed network connection"):
+		return "local_closed"
+	case strings.Contains(msg, "exceeds hard limit"):
+		return "frame_too_large"
+	case errors.Is(err, errLargePayloadBudgetExhausted):
+		return "payload_budget_exhausted"
+	default:
+		return "read_error"
+	}
+}
+
 type inflightPeerDial struct {
 	done    chan struct{}
 	session *outboundPeerSession
@@ -4364,6 +4401,13 @@ func (p *PeerServer) runCycle(cycle *serverCycle, listener net.Listener) {
 		remoteSubnet := extractSubnet(conn.RemoteAddr().String())
 		releaseSlot, rejectMsg, ok := p.tryReserveInboundSlot(remoteSubnet, disableSubnetLimit)
 		if !ok {
+			debugLogf(
+				"[P2P][CONN] inbound rejected remote=%s subnet=%s reason=%q active=%d",
+				conn.RemoteAddr().String(),
+				remoteSubnet,
+				strings.TrimSpace(rejectMsg),
+				atomic.LoadInt32(&p.ActiveConns),
+			)
 			_ = conn.SetDeadline(time.Now().Add(1 * time.Second))
 			_, _ = conn.Write([]byte(rejectMsg))
 			cycle.connsMu.Lock()
@@ -4711,6 +4755,8 @@ type inboundConnSession struct {
 	registeredActive      bool
 	connMempoolTokens     float64
 	connMempoolLastRefill time.Time
+	framesProcessed       int
+	closeReason           string
 }
 
 // HandleConnection processes incoming P2P messages in a persistent stream loop [N-02]
@@ -4725,6 +4771,7 @@ func (p *PeerServer) handleConnectionWithRelease(conn net.Conn, subnet string, r
 
 	remoteAddr := conn.RemoteAddr().String()
 	remoteIP := extractHost(remoteAddr)
+	connStart := time.Now()
 
 	sess := inboundConnSession{
 		conn:                  conn,
@@ -4733,9 +4780,10 @@ func (p *PeerServer) handleConnectionWithRelease(conn net.Conn, subnet string, r
 		p2pTOFU:               p2pTOFU,
 		quitCh:                p.activeCycleQuitChan(),
 		readTimeout:           InboundHandshakeTimeout,
-		deadline:              time.Now().Add(InboundHandshakeTimeout),
+		deadline:              connStart.Add(InboundHandshakeTimeout),
 		connMempoolTokens:     3.0,
-		connMempoolLastRefill: time.Now(),
+		connMempoolLastRefill: connStart,
+		closeReason:           "normal_close",
 	}
 
 	defer func() {
@@ -4745,11 +4793,7 @@ func (p *PeerServer) handleConnectionWithRelease(conn net.Conn, subnet string, r
 			p.inboundSessionsMu.Unlock()
 		}
 
-		debugLogf(
-			"[P2P][CONN] inbound closed remote=%s active_before=%d",
-			conn.RemoteAddr().String(),
-			atomic.LoadInt32(&p.ActiveConns),
-		)
+		activeBefore := atomic.LoadInt32(&p.ActiveConns)
 		_ = conn.Close()
 		if releaseSlot != nil {
 			releaseSlot()
@@ -4762,16 +4806,32 @@ func (p *PeerServer) handleConnectionWithRelease(conn net.Conn, subnet string, r
 			}
 			p.connLock.Unlock()
 		}
+		activeAfter := atomic.LoadInt32(&p.ActiveConns)
+		reason := sess.closeReason
+		if reason == "" {
+			reason = "normal_close"
+		}
+		debugLogf(
+			"[P2P][CONN] inbound closed remote=%s reason=%s duration=%s msgs=%d active_before=%d active=%d",
+			remoteAddr,
+			reason,
+			time.Since(connStart).Round(time.Millisecond),
+			sess.framesProcessed,
+			activeBefore,
+			activeAfter,
+		)
 	}()
 
 	reader := bufio.NewReader(conn)
 	if p.IsBanned(remoteIP) {
+		sess.closeReason = "banned"
 		return
 	}
 
 	// Keep reading messages until client disconnects, is banned, or deadline expires [N-02]
 	for {
 		if p.IsBanned(remoteIP) {
+			sess.closeReason = "banned"
 			return
 		}
 		_ = conn.SetDeadline(sess.deadline)
@@ -4779,11 +4839,12 @@ func (p *PeerServer) handleConnectionWithRelease(conn net.Conn, subnet string, r
 			return p.acquireLargePayloadLease(MaxIncomingPacketSize, sess.deadline, sess.quitCh)
 		})
 		if err != nil {
+			sess.closeReason = classifyInboundDisconnectReason(err, sess.readTimeout, sess.framesProcessed)
 			// Suppress expected EOF, timeout, and peer reset disconnects to prevent log spam.
 			if !isBenignDisconnectErr(err) {
 				debugLogf(
 					"[P2P][CONN] inbound read failed remote=%s error=%v",
-					conn.RemoteAddr().String(),
+					remoteAddr,
 					err,
 				)
 			}
@@ -4791,6 +4852,13 @@ func (p *PeerServer) handleConnectionWithRelease(conn net.Conn, subnet string, r
 		}
 
 		if !p.processInboundFrame(&sess, rawLine, releaseLease) {
+			if sess.closeReason == "" || sess.closeReason == "normal_close" {
+				if p.IsBanned(remoteIP) {
+					sess.closeReason = "banned"
+				} else {
+					sess.closeReason = "protocol_drop"
+				}
+			}
 			return
 		}
 	}
@@ -4846,12 +4914,15 @@ func (p *PeerServer) processInboundFrame(sess *inboundConnSession, rawLine []byt
 		sess.pendingFingerprint = extractCertPubkeyFingerprint(sess.conn)
 		if sess.pendingFingerprint != "" && sess.p2pTOFU {
 			if err := p.verifyOrRecordInboundIdentity(sess.pendingFingerprint); err != nil {
+				sess.closeReason = "identity_rejected"
 				core.LogDebug(core.LogCategoryDiscovery, "Rejected inbound peer identity from %s: %v", sess.remoteAddr, err)
 				return false
 			}
 		}
 		sess.identityChecked = true
 	}
+
+	sess.framesProcessed++
 
 	// Extend socket read deadline strictly after peer passes network, ban, rate, and identity checks.
 	if sess.readTimeout != AuthenticatedIdleTimeout && (!sess.p2pTOFU || sess.pendingFingerprint != "") {
