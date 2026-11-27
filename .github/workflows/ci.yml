@@ -27,6 +27,15 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Go Format Check
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
       - name: Go Vet
         run: go vet -tags testhooks ./...
 

@@ -30,34 +30,34 @@ import (
 )
 
 const (
-	MaxPeersDefault            = 50
-	MaxInboundPeersDefault     = 38                // Default reserved inbound connection cap within MaxPeersDefault
-	MaxOutboundPeersDefault    = 12                // Default reserved outbound connection cap within MaxPeersDefault
-	MaxInboundFingerprints     = 2048              // RAM-only FIFO cache cap for inbound TLS client cert fingerprints
-	MaxAddressBookSize         = 1000              // Maximum addresses stored in address book [N-16]
-	MaxPeersPerResponse        = 250               // Maximum peers returned in PEERS_LIST [N-16]
-	MaxPeerFailures            = 3                 // Number of consecutive failures before evicting dead peer [N-16]
-	MaxSyncConcurrency         = 8                 // Max parallel workers for SyncBestPeer [N-16]
-	MaxPeersPerSubnet          = 3                 // Maximum concurrent peers/connections allowed per /24 subnet (Sybil/Eclipse defense)
-	MaxIncomingPacketSize      = 8 * 1024 * 1024   // 8 MiB max per P2P JSON line frame (accommodates 2 MB TxBinaryV1 JSON blocks) [P2-4]
-	LargePayloadThresholdBytes = 1 * 1024 * 1024   // Frames > 1 MiB acquire a lease from the aggregate budget
-	MaxAggregateLargePayloadBytes = 32 * 1024 * 1024 // 32 MiB process-wide transient large-payload ceiling (caps concurrent frame memory across peers)
-	LargePayloadAcquireTimeout = 2 * time.Second   // Bounded backpressure wait (~2s) before dropping saturated large frames
-	maxConcurrentPushDecompress = 2                // Concurrent PUSH_BLOCKS deflate inflation cap (bounds inflate memory amplification)
-	MaxBlockRangeResponseBytes = core.MaxBlockSize // >= MaxBlockSize (2,000,000 B), ensures always returning at least 1 block [P2-4]
-	MaxSyncBatchBytes          = 8 * 1024 * 1024   // 8 MiB canonical blk.Size() cap per ResolveFork commit batch (~16-20 MiB peak heap)
-	SocketTimeoutDuration      = 20 * time.Second
-	PeersFile                  = "peers.json"
-	SyncChunkSize              = 250              // Maximum blocks per GET_BLOCK_RANGE request
-	MaxOrphanBlocks            = 100              // Maximum orphan blocks in buffer [N-17]
-	MaxOrphanBlocksPerPeer     = 10               // Maximum orphan blocks allowed per peer [N-17]
-	MaxOrphanTxs               = 500              // Maximum pending out-of-order transactions [N-17]
-	MaxOrphanTxsPerPeer        = 25               // Maximum queued/in-flight orphan transactions per peer IP (prevents single-peer orphan flooding)
-	OrphanTxExpiry             = 10 * time.Minute // Out-of-order tx expiration window [N-17]
-	DefaultBanDuration         = 12 * time.Hour   // Misbehavior ban duration (reduced from 24h to 12h) [v1.0.10]
-	MaxPeerInactivityDuration  = 2 * time.Hour    // Unresponsive non-seed peer eviction threshold [v1.0.10]
-	maxRebroadcastTxsPerCycle  = 100              // Cap mempool txs rebroadcast per sync cycle
-	maxConcurrentRebroadcasts  = 16               // Bounded worker pool for RebroadcastMempool
+	MaxPeersDefault               = 50
+	MaxInboundPeersDefault        = 38                // Default reserved inbound connection cap within MaxPeersDefault
+	MaxOutboundPeersDefault       = 12                // Default reserved outbound connection cap within MaxPeersDefault
+	MaxInboundFingerprints        = 2048              // RAM-only FIFO cache cap for inbound TLS client cert fingerprints
+	MaxAddressBookSize            = 1000              // Maximum addresses stored in address book [N-16]
+	MaxPeersPerResponse           = 250               // Maximum peers returned in PEERS_LIST [N-16]
+	MaxPeerFailures               = 3                 // Number of consecutive failures before evicting dead peer [N-16]
+	MaxSyncConcurrency            = 8                 // Max parallel workers for SyncBestPeer [N-16]
+	MaxPeersPerSubnet             = 3                 // Maximum concurrent peers/connections allowed per /24 subnet (Sybil/Eclipse defense)
+	MaxIncomingPacketSize         = 8 * 1024 * 1024   // 8 MiB max per P2P JSON line frame (accommodates 2 MB TxBinaryV1 JSON blocks) [P2-4]
+	LargePayloadThresholdBytes    = 1 * 1024 * 1024   // Frames > 1 MiB acquire a lease from the aggregate budget
+	MaxAggregateLargePayloadBytes = 32 * 1024 * 1024  // 32 MiB process-wide transient large-payload ceiling (caps concurrent frame memory across peers)
+	LargePayloadAcquireTimeout    = 2 * time.Second   // Bounded backpressure wait (~2s) before dropping saturated large frames
+	maxConcurrentPushDecompress   = 2                 // Concurrent PUSH_BLOCKS deflate inflation cap (bounds inflate memory amplification)
+	MaxBlockRangeResponseBytes    = core.MaxBlockSize // >= MaxBlockSize (2,000,000 B), ensures always returning at least 1 block [P2-4]
+	MaxSyncBatchBytes             = 8 * 1024 * 1024   // 8 MiB canonical blk.Size() cap per ResolveFork commit batch (~16-20 MiB peak heap)
+	SocketTimeoutDuration         = 20 * time.Second
+	PeersFile                     = "peers.json"
+	SyncChunkSize                 = 250              // Maximum blocks per GET_BLOCK_RANGE request
+	MaxOrphanBlocks               = 100              // Maximum orphan blocks in buffer [N-17]
+	MaxOrphanBlocksPerPeer        = 10               // Maximum orphan blocks allowed per peer [N-17]
+	MaxOrphanTxs                  = 500              // Maximum pending out-of-order transactions [N-17]
+	MaxOrphanTxsPerPeer           = 25               // Maximum queued/in-flight orphan transactions per peer IP (prevents single-peer orphan flooding)
+	OrphanTxExpiry                = 10 * time.Minute // Out-of-order tx expiration window [N-17]
+	DefaultBanDuration            = 12 * time.Hour   // Misbehavior ban duration (reduced from 24h to 12h) [v1.0.10]
+	MaxPeerInactivityDuration     = 2 * time.Hour    // Unresponsive non-seed peer eviction threshold [v1.0.10]
+	maxRebroadcastTxsPerCycle     = 100              // Cap mempool txs rebroadcast per sync cycle
+	maxConcurrentRebroadcasts     = 16               // Bounded worker pool for RebroadcastMempool
 )
 
 // extractSubnet derives the /24 IPv4 or /48 IPv6 subnet prefix for Sybil/Eclipse attack mitigation
@@ -310,96 +310,96 @@ type serverCycle struct {
 }
 
 type PeerServer struct {
-	Port                 string
-	Bind                 string
-	netIDVal             atomic.Pointer[string] // Single synchronized source of truth for runtime queries [C-33]
-	DataDir              string                 // Custom instance data directory for isolated peer storage [P1-A]
-	peerStorePath        string                 // [P1-A] Resolved immutable peer store path
-	peerStoreInitErr     error                  // [P1-A] Peer store directory creation / path error
-	Peers                []string
-	dialablePeers        []string             // Canonical normalized ip:port dial targets synchronized with Peers
-	newPeers             map[string]*PeerInfo // [N-16] Untried peer candidates
-	triedPeers           map[string]*PeerInfo // [N-16] Handshake verified peers
-	Lock                 sync.RWMutex
-	Blockchain           *core.Blockchain
-	MaxPeers             int
-	MaxInboundPeers      int
-	MaxOutboundPeers     int
-	ActiveConns          int32
-	activeInbound        int32
-	activeOutbound       int32
-	connLock             sync.Mutex
-	subnetConns          map[string]int
-	DHT                  *RoutingTable // Kademlia DHT routing table for decentralized peer discovery
-	seenLock             sync.Mutex
-	seenTxs              map[string]time.Time
-	seenBlks             map[string]time.Time
-	negativeBlks         map[string]time.Time // [T2] Bounded negative cache of invalid block digests
-	syncCooldowns        map[string]time.Time // [T3] Peer IP -> last sync trigger time
-	relayLock            sync.Mutex
-	relayedTxs           map[string]map[string]time.Time
-	syncMu               sync.Mutex
-	syncingHosts         map[string]bool
-	seedMu               sync.RWMutex
-	seedPeers            []string            // configured seeds (host:port or DNS name), re-dialed after isolation
-	seedAddrs            map[string]struct{} // resolved seed addresses, never evicted from the peer store
-	seedHostToIPs        map[string][]string // DNS seed endpoint -> resolved IP endpoints mapping [v1.0.6 dashboard fix]
-	seedIPToHosts        map[string][]string // resolved IP endpoint -> DNS seed endpoints mapping [v1.0.6 dashboard fix]
-	resolveSeed          func(string, bool) []string
-	seedRefreshGen       uint64
-	inboundSessionsMu    sync.RWMutex
-	activeInboundConns   map[net.Conn]string // active inbound connections -> remote address [v1.0.6 dashboard fix]
-	inboundIdentityMu    sync.Mutex
-	inboundFingerprints     map[string]struct{} // RAM-only bounded cache for inbound TLS client identities
-	inboundFingerprintOrder []string            // FIFO eviction order for inboundFingerprints
-	expectedChains       map[string]time.Time // [N-04] tracks requested chains to reject unsolicited CHAIN_RESPONSE
-	orphanLock           sync.Mutex
-	orphanBlocks         map[string]*orphanBlockEntry // [N-06, N-17] orphan block buffer keyed by Block.Hash
-	orphanTxs            map[string]*orphanTxEntry    // [N-17] out-of-order pending transactions pool
-	orphanTxInFlight     map[string]int               // Per-peer IP pre-verify orphan tx reservations (bounds concurrent signature verification bursts)
-	lastOrphanScan       time.Time                    // [T5] Timestamp of last top-level orphan tx scan
-	DisableSubnetLimit   bool                         // [N-12] Allow multiple connections from same subnet (LAN/testnet)
-	AllowPrivatePeers    bool                         // [N-05, N-16] Allow loopback and private IP addresses (LAN/testnet)
-	RequireTLS           bool                         // [N-08] Require strict TLS 1.3
-	P2PTOFU              bool                         // [F1] Enable Trust-On-First-Use (TOFU) TLS certificate fingerprint pinning
-	tlsConfig            *tls.Config                  // Instance TLS config for concurrent safety
-	peerStoreCorrupted   bool                         // [Phase 5, Follow-up Point 4] Fail-closed flag when peer store file is corrupt
-	savePeersLock        sync.Mutex                   // [P1 Final Blocker] Serializes peer-store snapshot -> marshal -> write -> sync -> rename transactions
-	tofuLock             sync.Mutex                   // [P1 Final Fix] Serializes first-contact TOFU pinning per peer address
-	pendingTOFU          map[string]*pendingPin       // [P1 Final Fix] In-flight first-contact persistence attempts per peer
-	failedPins           map[string]string            // [P1 Final Fix] peerAddr -> cert fingerprint that failed persistence; prevents silent repinning
-	banLock              sync.RWMutex                 // [N-15] Ban and rate limit mutex
-	banScores            map[string]int               // [N-15] Misbehavior ban scores per IP
-	bannedIPs            map[string]time.Time         // [N-15] Active IP bans and expiry
-	skewStrikes          map[string][]time.Time       // [F-04] Timestamp strikes for minor clock skew
-	banFileMu            sync.Mutex                   // serializes writes of bans.json
-	banPersistWg         sync.WaitGroup               // tracks async persistBans writes for clean shutdown
-	whitelistLock        sync.RWMutex                 // [P2P Whitelist] guards whitelistIPs
-	whitelistIPs         map[string]struct{}          // [P2P Whitelist] Operator-whitelisted IP addresses (exempt from bans/rate-limits)
-	whitelistModTime     time.Time                    // [P2P Whitelist] last modified time of whitelist.json
-	pushMu               sync.Mutex                   // serializes PUSH_BLOCKS application
-	pushSessionsMu       sync.Mutex
-	pushSessions         map[string]*pushBufferSession
-	pushCooldownMu       sync.Mutex
-	pushCooldowns        map[string]time.Time           // peer address -> last chain push
-	seedPinMu            sync.RWMutex                   // guards seedPins, seedHostPins, seedHostResolvedIPs, seedIPPins
-	seedPins             map[string]string              // normalized endpoint -> pinned SPKI fp (backwards-compatible lookup)
-	seedHostPins         map[string]string              // normalized configured seed host:port -> pinned SPKI fp
-	seedHostResolvedIPs  map[string][]string            // normalized seed host:port -> last resolved ip:port endpoints
-	seedIPPins           map[string]map[string]struct{} // normalized resolved ip:port -> set of distinct pinned SPKI fps
-	rateTrackers         map[string]*peerRateTracker // [N-15] Token bucket and endpoint trackers
-	BlockRangeBurst      float64                     // Configurable burst for GET_BLOCK_RANGE (token-bucket limiter; default 120.0)
-	BlockRangeRefillRate float64                     // Configurable refill rate/sec for GET_BLOCK_RANGE (default 20.0)
-	listener             net.Listener                // [T-06] Active TCP listener
-	quitChan             chan struct{}               // [T-06] Shutdown signal channel
-	stopLock             sync.Mutex
-	outboundMu           sync.Mutex
-	outboundSessions     map[string]*outboundPeerSession
-	inflightDials        map[string]*inflightPeerDial
-	reachabilityMu       sync.Mutex
-	unreachablePeers     map[string]time.Time
-	probingPeers         map[string]bool
-	announcedPeers       map[string]time.Time
+	Port                    string
+	Bind                    string
+	netIDVal                atomic.Pointer[string] // Single synchronized source of truth for runtime queries [C-33]
+	DataDir                 string                 // Custom instance data directory for isolated peer storage [P1-A]
+	peerStorePath           string                 // [P1-A] Resolved immutable peer store path
+	peerStoreInitErr        error                  // [P1-A] Peer store directory creation / path error
+	Peers                   []string
+	dialablePeers           []string             // Canonical normalized ip:port dial targets synchronized with Peers
+	newPeers                map[string]*PeerInfo // [N-16] Untried peer candidates
+	triedPeers              map[string]*PeerInfo // [N-16] Handshake verified peers
+	Lock                    sync.RWMutex
+	Blockchain              *core.Blockchain
+	MaxPeers                int
+	MaxInboundPeers         int
+	MaxOutboundPeers        int
+	ActiveConns             int32
+	activeInbound           int32
+	activeOutbound          int32
+	connLock                sync.Mutex
+	subnetConns             map[string]int
+	DHT                     *RoutingTable // Kademlia DHT routing table for decentralized peer discovery
+	seenLock                sync.Mutex
+	seenTxs                 map[string]time.Time
+	seenBlks                map[string]time.Time
+	negativeBlks            map[string]time.Time // [T2] Bounded negative cache of invalid block digests
+	syncCooldowns           map[string]time.Time // [T3] Peer IP -> last sync trigger time
+	relayLock               sync.Mutex
+	relayedTxs              map[string]map[string]time.Time
+	syncMu                  sync.Mutex
+	syncingHosts            map[string]bool
+	seedMu                  sync.RWMutex
+	seedPeers               []string            // configured seeds (host:port or DNS name), re-dialed after isolation
+	seedAddrs               map[string]struct{} // resolved seed addresses, never evicted from the peer store
+	seedHostToIPs           map[string][]string // DNS seed endpoint -> resolved IP endpoints mapping [v1.0.6 dashboard fix]
+	seedIPToHosts           map[string][]string // resolved IP endpoint -> DNS seed endpoints mapping [v1.0.6 dashboard fix]
+	resolveSeed             func(string, bool) []string
+	seedRefreshGen          uint64
+	inboundSessionsMu       sync.RWMutex
+	activeInboundConns      map[net.Conn]string // active inbound connections -> remote address [v1.0.6 dashboard fix]
+	inboundIdentityMu       sync.Mutex
+	inboundFingerprints     map[string]struct{}  // RAM-only bounded cache for inbound TLS client identities
+	inboundFingerprintOrder []string             // FIFO eviction order for inboundFingerprints
+	expectedChains          map[string]time.Time // [N-04] tracks requested chains to reject unsolicited CHAIN_RESPONSE
+	orphanLock              sync.Mutex
+	orphanBlocks            map[string]*orphanBlockEntry // [N-06, N-17] orphan block buffer keyed by Block.Hash
+	orphanTxs               map[string]*orphanTxEntry    // [N-17] out-of-order pending transactions pool
+	orphanTxInFlight        map[string]int               // Per-peer IP pre-verify orphan tx reservations (bounds concurrent signature verification bursts)
+	lastOrphanScan          time.Time                    // [T5] Timestamp of last top-level orphan tx scan
+	DisableSubnetLimit      bool                         // [N-12] Allow multiple connections from same subnet (LAN/testnet)
+	AllowPrivatePeers       bool                         // [N-05, N-16] Allow loopback and private IP addresses (LAN/testnet)
+	RequireTLS              bool                         // [N-08] Require strict TLS 1.3
+	P2PTOFU                 bool                         // [F1] Enable Trust-On-First-Use (TOFU) TLS certificate fingerprint pinning
+	tlsConfig               *tls.Config                  // Instance TLS config for concurrent safety
+	peerStoreCorrupted      bool                         // [Phase 5, Follow-up Point 4] Fail-closed flag when peer store file is corrupt
+	savePeersLock           sync.Mutex                   // [P1 Final Blocker] Serializes peer-store snapshot -> marshal -> write -> sync -> rename transactions
+	tofuLock                sync.Mutex                   // [P1 Final Fix] Serializes first-contact TOFU pinning per peer address
+	pendingTOFU             map[string]*pendingPin       // [P1 Final Fix] In-flight first-contact persistence attempts per peer
+	failedPins              map[string]string            // [P1 Final Fix] peerAddr -> cert fingerprint that failed persistence; prevents silent repinning
+	banLock                 sync.RWMutex                 // [N-15] Ban and rate limit mutex
+	banScores               map[string]int               // [N-15] Misbehavior ban scores per IP
+	bannedIPs               map[string]time.Time         // [N-15] Active IP bans and expiry
+	skewStrikes             map[string][]time.Time       // [F-04] Timestamp strikes for minor clock skew
+	banFileMu               sync.Mutex                   // serializes writes of bans.json
+	banPersistWg            sync.WaitGroup               // tracks async persistBans writes for clean shutdown
+	whitelistLock           sync.RWMutex                 // [P2P Whitelist] guards whitelistIPs
+	whitelistIPs            map[string]struct{}          // [P2P Whitelist] Operator-whitelisted IP addresses (exempt from bans/rate-limits)
+	whitelistModTime        time.Time                    // [P2P Whitelist] last modified time of whitelist.json
+	pushMu                  sync.Mutex                   // serializes PUSH_BLOCKS application
+	pushSessionsMu          sync.Mutex
+	pushSessions            map[string]*pushBufferSession
+	pushCooldownMu          sync.Mutex
+	pushCooldowns           map[string]time.Time           // peer address -> last chain push
+	seedPinMu               sync.RWMutex                   // guards seedPins, seedHostPins, seedHostResolvedIPs, seedIPPins
+	seedPins                map[string]string              // normalized endpoint -> pinned SPKI fp (backwards-compatible lookup)
+	seedHostPins            map[string]string              // normalized configured seed host:port -> pinned SPKI fp
+	seedHostResolvedIPs     map[string][]string            // normalized seed host:port -> last resolved ip:port endpoints
+	seedIPPins              map[string]map[string]struct{} // normalized resolved ip:port -> set of distinct pinned SPKI fps
+	rateTrackers            map[string]*peerRateTracker    // [N-15] Token bucket and endpoint trackers
+	BlockRangeBurst         float64                        // Configurable burst for GET_BLOCK_RANGE (token-bucket limiter; default 120.0)
+	BlockRangeRefillRate    float64                        // Configurable refill rate/sec for GET_BLOCK_RANGE (default 20.0)
+	listener                net.Listener                   // [T-06] Active TCP listener
+	quitChan                chan struct{}                  // [T-06] Shutdown signal channel
+	stopLock                sync.Mutex
+	outboundMu              sync.Mutex
+	outboundSessions        map[string]*outboundPeerSession
+	inflightDials           map[string]*inflightPeerDial
+	reachabilityMu          sync.Mutex
+	unreachablePeers        map[string]time.Time
+	probingPeers            map[string]bool
+	announcedPeers          map[string]time.Time
 
 	// lifecycleLock protects against store path/network transitions racing with active TOFU operations [P1-A Lifecycle Race Fix].
 	//
@@ -498,9 +498,9 @@ const (
 	AuthenticatedIdleTimeout = 90 * time.Second
 	// InboundHandshakeTimeout bounds how long a new inbound connection may take (including the TLS
 	// handshake) to deliver its first message before it is dropped, freeing the slot for honest peers.
-	InboundHandshakeTimeout = 5 * time.Second
-	UnreachablePeerCooldown = 2 * time.Hour // Inbound NAT/firewall unreachable port cooldown [v1.0.10]
-	EvictedPeerCooldown     = 2 * time.Hour // Dead/evicted peer dial cooldown (do not retry for >= 2h) [v1.0.10]
+	InboundHandshakeTimeout    = 5 * time.Second
+	UnreachablePeerCooldown    = 2 * time.Hour // Inbound NAT/firewall unreachable port cooldown [v1.0.10]
+	EvictedPeerCooldown        = 2 * time.Hour // Dead/evicted peer dial cooldown (do not retry for >= 2h) [v1.0.10]
 	SelfAnnounceInterval       = 10 * time.Minute
 	InboundProbeTimeout        = 3 * time.Second
 	maxConcurrentInboundProbes = 4

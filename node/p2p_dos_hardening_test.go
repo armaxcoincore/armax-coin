@@ -903,9 +903,9 @@ func TestP2P_InboundOutboundSlotReservationAndInvariant(t *testing.T) {
 }
 
 // TestP2P_LargePacketAbove4MBAndAggregateBudget verifies 8 MiB frame acceptance and aggregate large-payload memory budgeting:
-// - Frames > 4 MiB (up to 8 MiB MaxIncomingPacketSize) are accepted cleanly without disconnects,
-// - Saturated MaxAggregateLargePayloadBytes (32 MiB) applies ~2s bounded backpressure (LargePayloadAcquireTimeout) that recovers
-//   when a lease is freed in time and fails cleanly on deadline timeout without memory bloat.
+//   - Frames > 4 MiB (up to 8 MiB MaxIncomingPacketSize) are accepted cleanly without disconnects,
+//   - Saturated MaxAggregateLargePayloadBytes (32 MiB) applies ~2s bounded backpressure (LargePayloadAcquireTimeout) that recovers
+//     when a lease is freed in time and fails cleanly on deadline timeout without memory bloat.
 func TestP2P_LargePacketAbove4MBAndAggregateBudget(t *testing.T) {
 	t.Setenv("ARMX_DATA_DIR", t.TempDir())
 	t.Setenv("ARMX_ALLOW_PRIVATE_PEERS", "1")
@@ -1518,10 +1518,10 @@ func TestP2P_QueryPeerTimeoutNoRedialVsResetTOFUProbe(t *testing.T) {
 }
 
 // TestP2P_OrphanTxsInFlightReservationAndFairEviction verifies MaxOrphanTxsPerPeer pre-verification reservation and fair top-consumer eviction:
-// - Pre-verify orphanTxInFlight reservation caps admitted orphans per peer IP at MaxOrphanTxsPerPeer (25)
-//   across 60 concurrent submissions with zero leaked reservations,
-// - Invalid signatures also release in-flight slots cleanly, and
-// - Global MaxOrphanTxs (500) cap evicts top consumer's oldest entry before low-volume honest peers.
+//   - Pre-verify orphanTxInFlight reservation caps admitted orphans per peer IP at MaxOrphanTxsPerPeer (25)
+//     across 60 concurrent submissions with zero leaked reservations,
+//   - Invalid signatures also release in-flight slots cleanly, and
+//   - Global MaxOrphanTxs (500) cap evicts top consumer's oldest entry before low-volume honest peers.
 func TestP2P_OrphanTxsInFlightReservationAndFairEviction(t *testing.T) {
 	t.Setenv("ARMX_DATA_DIR", t.TempDir())
 	t.Setenv("ARMX_ALLOW_PRIVATE_PEERS", "1")
