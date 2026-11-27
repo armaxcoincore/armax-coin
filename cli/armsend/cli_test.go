@@ -21,18 +21,37 @@ import (
 
 var (
 	sendBinary string
+	sendDir    string
 	sendOnce   sync.Once
 	sendErr    error
 )
 
+// TestMain removes the per-process build directory after the package runs.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if sendDir != "" {
+		_ = os.RemoveAll(sendDir)
+	}
+	os.Exit(code)
+}
+
 func armsendBinary(t *testing.T) string {
 	t.Helper()
 	sendOnce.Do(func() {
+		// A unique directory per test process: a fixed shared path lets
+		// concurrent test runs (other branches or worktrees) overwrite or
+		// execute each other's binary.
+		dir, err := os.MkdirTemp("", "armsend-cli-test-")
+		if err != nil {
+			sendErr = err
+			return
+		}
+		sendDir = dir
 		name := "armsend_cli_test"
 		if runtime.GOOS == "windows" {
 			name += ".exe"
 		}
-		sendBinary = filepath.Join(os.TempDir(), name)
+		sendBinary = filepath.Join(dir, name)
 		if out, err := exec.Command("go", "build", "-o", sendBinary, "main.go").CombinedOutput(); err != nil {
 			sendErr = &buildError{err: err, out: string(out)}
 		}

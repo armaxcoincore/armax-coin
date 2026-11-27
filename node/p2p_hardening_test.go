@@ -50,8 +50,7 @@ func TestP2PChunkedRangeSync(t *testing.T) {
 	ps := NewPeerServer(port, bc)
 	defer ps.Stop()
 	go ps.StartServer()
-
-	time.Sleep(100 * time.Millisecond)
+	waitForServerRunning(t, ps, 5*time.Second)
 	target := "127.0.0.1:" + port
 
 	// 1. Query GET_HEIGHT
@@ -156,8 +155,7 @@ func TestP2PMultiMessageKeepAlive(t *testing.T) {
 	ps := NewPeerServer(port, bc)
 	defer ps.Stop()
 	go ps.StartServer()
-
-	time.Sleep(100 * time.Millisecond)
+	waitForServerRunning(t, ps, 5*time.Second)
 
 	conn, _, err := DialEncrypted("127.0.0.1:"+port, 3*time.Second)
 	if err != nil {
@@ -223,15 +221,27 @@ func TestP2PChainworkReorg(t *testing.T) {
 	psB := NewPeerServer(portB, bcB)
 	defer psB.Stop()
 	go psB.StartServer()
-
-	time.Sleep(100 * time.Millisecond)
+	// Wait until B's listener is bound: a fixed sleep raced the listener under full-suite load,
+	// and RequestChainSync returns silently when its first GET_HEIGHT query cannot connect.
+	waitForServerRunning(t, psB, 5*time.Second)
 
 	portA := getFreePort(t)
 	psA := NewPeerServer(portA, bcA)
 	defer psA.Stop()
 
-	// Node A syncs from Node B
-	psA.RequestChainSync("127.0.0.1:" + portB)
+	// Node A syncs from Node B. RequestChainSync is synchronous; retry it in case a transient
+	// connection error under load made one attempt return early.
+	tipOfB := func() string {
+		bcB.Lock.RLock()
+		defer bcB.Lock.RUnlock()
+		return bcB.Chain[len(bcB.Chain)-1].Hash
+	}
+	waitForCondition(t, 10*time.Second, func() bool {
+		psA.RequestChainSync("127.0.0.1:" + portB)
+		bcA.Lock.RLock()
+		defer bcA.Lock.RUnlock()
+		return bcA.Chain[len(bcA.Chain)-1].Hash == tipOfB()
+	}, "node A did not reorganize onto node B's heavier chain within 10s")
 
 	// Verify Node A reorganized to match Node B's chain length and tip
 	bcA.Lock.RLock()
@@ -262,8 +272,7 @@ func TestP2PUnsolicitedChainResponseRejected(t *testing.T) {
 	ps := NewPeerServer(port, bc)
 	defer ps.Stop()
 	go ps.StartServer()
-
-	time.Sleep(100 * time.Millisecond)
+	waitForServerRunning(t, ps, 5*time.Second)
 
 	// Send an unsolicited CHAIN_RESPONSE
 	unsolicitedMsg := Message{
