@@ -100,19 +100,38 @@ const AllowForeignNetworkKeystoreEnv = "ARMX_ALLOW_FOREIGN_NETWORK_KEYSTORE"
 // network implied by the stored address prefix. An empty result means it cannot be determined.
 func keystoreNetworkID(ks *KeystoreFile) (string, error) {
 	addrNet, addrOK := core.NetworkIDForAddress(ks.Address)
-	if ks.Network != "" {
-		if _, ok := core.AddressHRPForNetwork(ks.Network); !ok {
+	if strings.TrimSpace(ks.Network) != "" {
+		netID, ok := canonicalNetworkID(ks.Network)
+		if !ok {
 			return "", fmt.Errorf("keystore names unknown network %q", ks.Network)
 		}
-		if addrOK && !strings.EqualFold(addrNet, ks.Network) {
+		if addrOK && addrNet != netID {
 			return "", errors.New("keystore integrity failure: network field does not match stored address prefix")
 		}
-		return strings.ToUpper(ks.Network), nil
+		return netID, nil
 	}
 	if addrOK {
 		return addrNet, nil
 	}
 	return "", nil
+}
+
+// canonicalNetworkID maps a network ID or alias ("testnet", "ARMX-TESTNET-1") to the canonical
+// network ID, so a hand-edited keystore tag compares correctly with the active network.
+func canonicalNetworkID(name string) (string, bool) {
+	if strings.TrimSpace(name) == "" {
+		return "", false
+	}
+	hrp, ok := core.AddressHRPForNetwork(name)
+	if !ok {
+		return "", false
+	}
+	for _, id := range []string{"ARMX-MAINNET-1", "ARMX-TESTNET-1", "ARMX-REGTEST-1", "ARMX-SOAK-1"} {
+		if h, _ := core.AddressHRPForNetwork(id); h == hrp {
+			return id, true
+		}
+	}
+	return "", false
 }
 
 func writeFileAtomic0600(filePath string, data []byte, tmpPattern string) error {

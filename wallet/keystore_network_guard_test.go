@@ -151,6 +151,19 @@ func TestKeystoreNetworkGuard_TagMustMatchAddress(t *testing.T) {
 	if _, err := DecryptAndLoadKeystore(networkGuardPass, path); err == nil || !strings.Contains(err.Error(), "integrity failure") {
 		t.Fatalf("expected integrity failure for contradictory network tag, got %v", err)
 	}
+	// A hand-written alias of the right network is normalized, not mistaken for tampering.
+	for _, alias := range []string{"testnet", "TESTNET", "armx-testnet-1"} {
+		rewriteKeystoreField(t, path, "network", alias)
+		w, err := DecryptAndLoadKeystore(networkGuardPass, path)
+		if err != nil {
+			t.Fatalf("alias %q of the active network must unlock: %v", alias, err)
+		}
+		w.Zeroize()
+	}
+	rewriteKeystoreField(t, path, "network", "mainnet")
+	if _, err := DecryptAndLoadKeystore(networkGuardPass, path); err == nil || !strings.Contains(err.Error(), "integrity failure") {
+		t.Fatalf("an alias of another network must still contradict the address prefix, got %v", err)
+	}
 	rewriteKeystoreField(t, path, "network", "ARMX-UNKNOWN-9")
 	if _, err := DecryptAndLoadKeystore(networkGuardPass, path); err == nil || !strings.Contains(err.Error(), "unknown network") {
 		t.Fatalf("expected unknown network rejection, got %v", err)
