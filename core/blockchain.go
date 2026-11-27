@@ -573,6 +573,9 @@ func (bc *Blockchain) AddTransaction(tx Transaction) (bool, string) {
 	if len(bc.Chain) > 0 {
 		nextHeight = bc.Chain[len(bc.Chain)-1].Index + 1
 	}
+	if err := checkMultisigActivation(&tx, nextHeight); err != nil {
+		return false, fmt.Sprintf("Rejected: %v", err)
+	}
 	txEffSize := EffectiveTxSize(&tx, nextHeight)
 	if txEffSize <= 0 || txEffSize > MaxTxSize {
 		return false, fmt.Sprintf("Rejected: Transaction effective size (%d bytes) exceeds MaxTxSize (%d bytes)", txEffSize, MaxTxSize)
@@ -815,8 +818,13 @@ func (bc *Blockchain) SelectCandidateTransactionsLocked(maxTxs int, maxBytes int
 		stepSize := txSize
 		if binaryActive {
 			stepSize = 4 + txSize // 4-byte uint32 LE framing per tx in binary block
+		} else if tx.SigAlg == SigAlgMultisigMLDSA65 {
+			stepSize = tx.Size() // multisig MaxTxSize uses binary size, but a JSON-sized block counts JSON
 		}
 		if txSize > MaxTxSize || currentSize+stepSize > maxBytes {
+			continue
+		}
+		if checkMultisigActivation(&tx, nextHeight) != nil {
 			continue
 		}
 		txHash := tx.HashHex()

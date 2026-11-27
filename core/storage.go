@@ -599,6 +599,9 @@ func applyAndVerifyPreSnapshotBlock(b *Block, expected map[string]AccountState, 
 		if strings.EqualFold(senderHex, recipHex) {
 			return 0, fmt.Errorf("block #%d tx #%d self-transfer rejected", b.Index, idx)
 		}
+		if err := checkMultisigActivation(&tx, b.Index); err != nil {
+			return 0, fmt.Errorf("block #%d tx #%d %v", b.Index, idx, err)
+		}
 		if !tx.Verify() {
 			return 0, fmt.Errorf("block #%d tx #%d cryptographic signature verification failed", b.Index, idx)
 		}

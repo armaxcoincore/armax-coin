@@ -23,6 +23,8 @@ Armaxcoin is built from the ground up for the post-quantum era. All user transac
   - Regtest: `axrt1...`
   - Soak: `axsk1...`
   - Each node and wallet accepts only its own network's prefix, so an address from another network is rejected before signing or validation. Transaction hashes also commit to the Network ID, which prevents cross-network transaction replay.
+- **M-of-N Multisig Custody (`sig_alg` `0x02`):**
+  Mainnet and Regtest accept ML-DSA-65 multisig spends from block `#1` (`2 <= M <= 3`, `M <= N <= 4`). Testnet and Soak reject them. The account address is `SHA-256(0x02 || descriptor)`, and spends are always sized in `TxBinaryV1`. See [ML-DSA-65 Multisig Custody](architecture/consensus/mldsa65-multisig-custody.md).
 
 ### 1.2 Hashing Functions
 - **Block Hashing (Testnet, Blocks 0..519):** Double-SHA256 (`SHA-256d`).

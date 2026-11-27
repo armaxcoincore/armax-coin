@@ -1324,8 +1324,9 @@ func NewRPCHandler(bc *core.Blockchain, peerServer *PeerServer, limiter *IPRateL
 			return
 		}
 
-		// Protect against oversized JSON request body (MaxTxSize + 16KB margin)
-		r.Body = http.MaxBytesReader(w, r.Body, int64(core.MaxTxSize+16*1024))
+		// Protect against oversized JSON request body. Hex JSON is about twice the binary size, and
+		// multisig spends are bounded by MaxTxSize in TxBinaryV1, so allow 2*MaxTxSize + 16KB.
+		r.Body = http.MaxBytesReader(w, r.Body, int64(2*core.MaxTxSize+16*1024))
 
 		var tx core.Transaction
 		if err := json.NewDecoder(r.Body).Decode(&tx); err != nil {
