@@ -37,7 +37,7 @@ func TestArmaxHashV2ActivationLogic(t *testing.T) {
 		if IsArmaxHashV2Active(h) {
 			t.Fatalf("expected ArmaxHash v2 to be inactive at height %d", h)
 		}
-		b := NewBlock(nil, "0000000000000000000000000000000000000000000000000000000000000000", h, GenesisMiner, DifficultyToTarget(1))
+		b := NewBlock(nil, "0000000000000000000000000000000000000000000000000000000000000000", h, GenesisMinerForNetwork(""), DifficultyToTarget(1))
 		if b.PoWAlgorithm() != "sha256d" {
 			t.Fatalf("height %d: expected algo sha256d, got %s", h, b.PoWAlgorithm())
 		}
@@ -51,7 +51,7 @@ func TestArmaxHashV2ActivationLogic(t *testing.T) {
 		if IsArmaxHashV2Active(h) {
 			t.Fatalf("expected ArmaxHash v2 to be inactive at height %d", h)
 		}
-		b := NewBlock(nil, "0000000000000000000000000000000000000000000000000000000000000000", h, GenesisMiner, DifficultyToTarget(1))
+		b := NewBlock(nil, "0000000000000000000000000000000000000000000000000000000000000000", h, GenesisMinerForNetwork(""), DifficultyToTarget(1))
 		if b.PoWAlgorithm() != "armaxhash" {
 			t.Fatalf("height %d: expected algo armaxhash, got %s", h, b.PoWAlgorithm())
 		}
@@ -65,7 +65,7 @@ func TestArmaxHashV2ActivationLogic(t *testing.T) {
 		if !IsArmaxHashV2Active(h) {
 			t.Fatalf("expected ArmaxHash v2 to be active at height %d", h)
 		}
-		b := NewBlock(nil, "0000000000000000000000000000000000000000000000000000000000000000", h, GenesisMiner, DifficultyToTarget(1))
+		b := NewBlock(nil, "0000000000000000000000000000000000000000000000000000000000000000", h, GenesisMinerForNetwork(""), DifficultyToTarget(1))
 		if b.PoWAlgorithm() != "armaxhash-v2" {
 			t.Fatalf("height %d: expected algo armaxhash-v2, got %s", h, b.PoWAlgorithm())
 		}
@@ -83,7 +83,7 @@ func TestArmaxHashV2Calculation(t *testing.T) {
 	defer ResetArmaxHashV2ActivationHeightOverride()
 
 	_ = SetNetwork("testnet")
-	b := NewBlock(nil, "0000000000000000000000000000000000000000000000000000000000000000", 2500, GenesisMiner, DifficultyToTarget(1))
+	b := NewBlock(nil, "0000000000000000000000000000000000000000000000000000000000000000", 2500, GenesisMinerForNetwork(""), DifficultyToTarget(1))
 	b.Timestamp = 1700000000
 	b.Nonce = 123456
 
@@ -143,7 +143,7 @@ func TestArmaxHashV2MiningExecution(t *testing.T) {
 	defer bc.Close()
 
 	// Mine Block #1 (SHA-256d)
-	b1, err := bc.MineBlockContext(context.Background(), GenesisMiner, 1)
+	b1, err := bc.MineBlockContext(context.Background(), GenesisMinerForNetwork(""), 1)
 	if err != nil {
 		t.Fatalf("failed to mine block 1: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestArmaxHashV2MiningExecution(t *testing.T) {
 	}
 
 	// Mine Block #2 (ArmaxHash v1)
-	b2, err := bc.MineBlockContext(context.Background(), GenesisMiner, 1)
+	b2, err := bc.MineBlockContext(context.Background(), GenesisMinerForNetwork(""), 1)
 	if err != nil {
 		t.Fatalf("failed to mine block 2: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestArmaxHashV2MiningExecution(t *testing.T) {
 	}
 
 	// Mine Block #3 (ArmaxHash v2)
-	b3, err := bc.MineBlockContext(context.Background(), GenesisMiner, 1)
+	b3, err := bc.MineBlockContext(context.Background(), GenesisMinerForNetwork(""), 1)
 	if err != nil {
 		t.Fatalf("failed to mine block 3: %v", err)
 	}

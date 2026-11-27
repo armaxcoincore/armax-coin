@@ -10,20 +10,32 @@ const (
 	// GenesisTimestamp is the deterministic immutable timestamp for the Armaxcoin Mainnet Genesis block
 	GenesisTimestamp = int64(1710000000) // 2024-03-09T18:40:00Z
 
-	// GenesisMiner is the canonical burn address receiving the initial Genesis reward (32-byte 0x00 payload) [P2-2]
-	GenesisMiner = "armx1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqplwcdd"
+	// MainnetGenesisMiner is the Mainnet burn address (32-byte 0x00 payload, HRP "ax") receiving the
+	// initial Genesis reward [P2-2].
+	MainnetGenesisMiner = "ax1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqyum580"
+	// TestnetGenesisMiner is the Testnet burn address (32-byte 0x00 payload, HRP "armx"); frozen with Testnet Genesis.
+	TestnetGenesisMiner = "armx1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqplwcdd"
+	// RegtestGenesisMiner is the Regtest burn address (32-byte 0x00 payload, HRP "axrt").
+	RegtestGenesisMiner = "axrt1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqa862k7"
+	// SoakGenesisMiner is the Soak burn address (32-byte 0x00 payload, HRP "axsk").
+	SoakGenesisMiner = "axsk1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqpactgh"
+
+	// GenesisMiner is the Testnet burn address, kept for callers that predate per-network prefixes.
+	// Use GenesisMinerForNetwork for network-aware code.
+	GenesisMiner = TestnetGenesisMiner
 
 	// GenesisNonce is the Proof of Work nonce solving the Mainnet Genesis block
-	GenesisNonce = int64(7)
+	// (first nonce from 0 meeting GenesisTargetHex after the burn address moved to the "ax" prefix).
+	GenesisNonce = int64(12)
 
 	// GenesisTargetHex is the Proof of Work target ceiling for the Mainnet Genesis block (Difficulty 1) [C-31]
 	GenesisTargetHex = "0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 
 	// GenesisMerkleRoot is the Merkle root of the Mainnet Genesis coinbase transaction [C-07]
-	GenesisMerkleRoot = "ca91c25a9cb1c4d2f723a1849123ac18c71eac4958391b82fc51f56874f49d76"
+	GenesisMerkleRoot = "d4043c6881da932c78f0571da6bcd55d313c05eaeb0d1f790da5d9bec5e0b81f"
 
 	// GenesisHash is the canonical double-SHA256 (SHA-256d) hash of the Mainnet Genesis block
-	GenesisHash = "0820d42962071e01c8a7d2e6a3aa5640a17f8a60e9006bf59b6e76ac0001535e"
+	GenesisHash = "0ffbf057398af25d6c1ba605c48cf344c8631440778c31bbe7629cdd36342f72"
 
 	// GenesisPrevHash is the 64-zero parent hash of block 0
 	GenesisPrevHash = "0000000000000000000000000000000000000000000000000000000000000000"
@@ -36,12 +48,39 @@ const (
 	TestnetGenesisHash       = "0000000dc84202e63a340a2439625fbf9cea5cb7b84119f93d52cff39f63a68b"
 )
 
+// GenesisMinerForNetwork returns the zero-payload burn address of a network's Genesis block,
+// encoded with that network's address prefix. An empty or unknown ID means the active network;
+// an unknown active network falls back to the Testnet burn address.
+func GenesisMinerForNetwork(netID string) string {
+	if miner, ok := genesisMinerByID(netID); ok {
+		return miner
+	}
+	if miner, ok := genesisMinerByID(GetActiveNetwork().NetworkID); ok {
+		return miner
+	}
+	return TestnetGenesisMiner
+}
+
+func genesisMinerByID(netID string) (string, bool) {
+	switch strings.ToUpper(strings.TrimSpace(netID)) {
+	case "ARMX-MAINNET-1", "MAINNET":
+		return MainnetGenesisMiner, true
+	case "ARMX-TESTNET-1", "TESTNET":
+		return TestnetGenesisMiner, true
+	case "ARMX-REGTEST-1", "REGTEST":
+		return RegtestGenesisMiner, true
+	case "ARMX-SOAK-1", "SOAK":
+		return SoakGenesisMiner, true
+	}
+	return "", false
+}
+
 // GetMainnetGenesisBlock returns the hardcoded Mainnet Genesis block [P2-6]
 func GetMainnetGenesisBlock() Block {
 	coinbase := Transaction{
 		Sender:    "SYSTEM",
 		SenderPub: "",
-		Recipient: GenesisMiner,
+		Recipient: MainnetGenesisMiner,
 		Amount:    InitialReward,
 		Fee:       0,
 		Nonce:     0,
@@ -56,7 +95,7 @@ func GetMainnetGenesisBlock() Block {
 		MerkleRoot:   GenesisMerkleRoot,
 		Hash:         GenesisHash,
 		Nonce:        GenesisNonce,
-		Miner:        GenesisMiner,
+		Miner:        MainnetGenesisMiner,
 		Difficulty:   1,
 		Target:       GenesisTargetHex,
 	}
@@ -67,7 +106,7 @@ func GetTestnetGenesisBlock() Block {
 	coinbase := Transaction{
 		Sender:    "SYSTEM",
 		SenderPub: "",
-		Recipient: GenesisMiner,
+		Recipient: TestnetGenesisMiner,
 		Amount:    InitialReward,
 		Fee:       0,
 		Nonce:     0,
@@ -82,7 +121,7 @@ func GetTestnetGenesisBlock() Block {
 		MerkleRoot:   TestnetGenesisMerkleRoot,
 		Hash:         TestnetGenesisHash,
 		Nonce:        TestnetGenesisNonce,
-		Miner:        GenesisMiner,
+		Miner:        TestnetGenesisMiner,
 		Difficulty:   7,
 		Target:       TestnetGenesisTargetHex,
 	}
@@ -101,7 +140,7 @@ func GetSoakGenesisBlock() Block {
 		coinbase := Transaction{
 			Sender:    "SYSTEM",
 			SenderPub: "",
-			Recipient: GenesisMiner,
+			Recipient: SoakGenesisMiner,
 			Amount:    InitialReward,
 			Fee:       0,
 			Nonce:     0,
@@ -114,7 +153,7 @@ func GetSoakGenesisBlock() Block {
 			Transactions: []Transaction{coinbase},
 			PrevHash:     GenesisPrevHash,
 			MerkleRoot:   CalculateMerkleRootForNetwork([]Transaction{coinbase}, SoakProfile.NetworkID),
-			Miner:        GenesisMiner,
+			Miner:        SoakGenesisMiner,
 			Difficulty:   4,
 			Target:       SoakProfile.PowLimitHex,
 		}
@@ -140,7 +179,7 @@ func GetRegtestGenesisBlock() Block {
 		coinbase := Transaction{
 			Sender:    "SYSTEM",
 			SenderPub: "",
-			Recipient: GenesisMiner,
+			Recipient: RegtestGenesisMiner,
 			Amount:    InitialReward,
 			Fee:       0,
 			Nonce:     0,
@@ -153,7 +192,7 @@ func GetRegtestGenesisBlock() Block {
 			Transactions: []Transaction{coinbase},
 			PrevHash:     GenesisPrevHash,
 			MerkleRoot:   CalculateMerkleRootForNetwork([]Transaction{coinbase}, RegtestProfile.NetworkID),
-			Miner:        GenesisMiner,
+			Miner:        RegtestGenesisMiner,
 			Difficulty:   2,
 			Target:       RegtestProfile.PowLimitHex,
 		}

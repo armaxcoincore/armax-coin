@@ -1353,6 +1353,7 @@ func (bc *Blockchain) IsChainValid() bool {
 	mat := bc.GetCoinbaseMaturity()
 	simState := NewStateManager()
 	simState.CoinbaseMaturity = mat
+	simState.addressNetID = chainNetID
 	if err := simState.VerifyAndApplyBlock(&bc.Chain[0], InitialReward, mat); err != nil {
 		return false
 	}

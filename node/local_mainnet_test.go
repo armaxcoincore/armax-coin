@@ -311,7 +311,7 @@ func TestLocalMainnet_MiningStorageRestartLifecycle(t *testing.T) {
 	}
 
 	// Mine block #1 with ArmaxHash v2 (provisional locked Mainnet staging profile)
-	minerAddr := "armx1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqplwcdd"
+	minerAddr := core.GenesisMinerForNetwork("")
 	b1, err := bc1.MineBlockWithErr(minerAddr)
 	if err != nil {
 		t.Fatalf("MineBlockWithErr failed: %v", err)
@@ -394,7 +394,7 @@ func TestLocalMainnet_AlphaTestnetCompletelyUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBlockchainWithStoragePath for local mainnet failed: %v", err)
 	}
-	minerAddr := "armx1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqplwcdd"
+	minerAddr := core.GenesisMinerForNetwork("")
 	_, err = bc.MineBlockWithErr(minerAddr)
 	if err != nil {
 		t.Fatalf("MineBlockWithErr failed: %v", err)

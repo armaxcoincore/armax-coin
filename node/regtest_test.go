@@ -56,7 +56,7 @@ func TestRegtest_LWMAObservable150Blocks(t *testing.T) {
 	defer bc.Close()
 
 	start := time.Now()
-	minerAddr := core.GenesisMiner
+	minerAddr := core.GenesisMinerForNetwork("")
 	baseTime := bc.GetLatestBlock().Timestamp
 
 	// Mine 150 blocks sequentially on regtest (8-bit target)

@@ -70,7 +70,7 @@ func TestMineBlockContextAtomicJobRotation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	addr := "armx1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqplwcdd"
+	addr := GenesisMinerForNetwork("")
 	minedBlock, err := bc.MineBlockContext(ctx, addr, 4)
 	if err != nil {
 		t.Fatalf("MineBlockContext failed: %v", err)
@@ -107,7 +107,7 @@ func TestMineBlockContextRotatesToTEDREmergencyTarget(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	addr := "armx1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqplwcdd"
+	addr := GenesisMinerForNetwork("")
 	minedBlock, err := bc.MineBlockContext(ctx, addr, 2)
 	if err != nil {
 		t.Fatalf("MineBlockContext failed: %v", err)
@@ -206,7 +206,7 @@ func TestMineBlockContextUnderASERT(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	addr := "armx1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqplwcdd"
+	addr := GenesisMinerForNetwork("")
 	minedBlock, err := bc.MineBlockContext(ctx, addr, 2)
 	if err != nil {
 		t.Fatalf("MineBlockContext under ASERT failed: %v", err)
@@ -233,7 +233,7 @@ func TestMineBlockContextCancelledDoesNotCommitBlock(t *testing.T) {
 	bc := MustNewBlockchain(1)
 	defer bc.Close()
 
-	addr := "armx1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqplwcdd"
+	addr := GenesisMinerForNetwork("")
 
 	// 1. Already-cancelled context must return context.Canceled without adding a block
 	canceledCtx, cancelNow := context.WithCancel(context.Background())
@@ -283,7 +283,7 @@ func TestMineBlockContextArmaxHashV2PositiveNonces(t *testing.T) {
 	defer cancel()
 
 	for h := 1; h <= 2; h++ {
-		blk, err := bc.MineBlockContext(ctx, GenesisMiner, 4)
+		blk, err := bc.MineBlockContext(ctx, GenesisMinerForNetwork(""), 4)
 		if err != nil {
 			t.Fatalf("MineBlockContext ArmaxHash v2 block #%d failed: %v", h, err)
 		}

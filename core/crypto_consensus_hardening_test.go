@@ -20,9 +20,10 @@ func TestCryptoConsensus_CoinbaseRejectsExtendedAndSigAlg(t *testing.T) {
 		_ = SetNetwork("testnet")
 	}()
 
+	// The recipient is set per network below (Testnet "armx1", Mainnet "ax1") before each section runs.
 	baseTx := Transaction{
 		Sender:    "SYSTEM",
-		Recipient: GenesisMiner,
+		Recipient: TestnetGenesisMiner,
 		Amount:    InitialReward,
 		Nonce:     1,
 		Signature: "REWARD_SIG",
@@ -70,6 +71,7 @@ func TestCryptoConsensus_CoinbaseRejectsExtendedAndSigAlg(t *testing.T) {
 	if err := SetNetwork("mainnet"); err != nil {
 		t.Fatalf("SetNetwork(mainnet) failed: %v", err)
 	}
+	baseTx.Recipient = MainnetGenesisMiner
 	for _, tc := range cases {
 		t.Run("mainnet_strict_"+tc.name, func(t *testing.T) {
 			sm := NewStateManager()
@@ -210,7 +212,7 @@ func TestCryptoConsensus_RejectsUppercaseSignatureAndPubKeyMalleability(t *testi
 	tx := Transaction{
 		Sender:    acc.Address,
 		SenderPub: acc.PubHex,
-		Recipient: GenesisMiner,
+		Recipient: GenesisMinerForNetwork(""),
 		Amount:    1_000_000,
 		Fee:       12_000,
 		Nonce:     1,
@@ -362,7 +364,7 @@ func TestCryptoConsensus_GenesisAndPreCheckRejectUnhashedScriptFields(t *testing
 	signedTx := Transaction{
 		Sender:    acc.Address,
 		SenderPub: acc.PubHex,
-		Recipient: GenesisMiner,
+		Recipient: GenesisMinerForNetwork(""),
 		Amount:    100_000_000,
 		Fee:       12_000,
 		Nonce:     1,
@@ -458,7 +460,7 @@ func TestCryptoConsensus_CirculatingSupplyUnderclaimAndIsChainValidCrossProfile(
 	}
 	defer bc.Close()
 
-	if _, err := bc.MineBlockWithErr(GenesisMiner); err != nil {
+	if _, err := bc.MineBlockWithErr(GenesisMinerForNetwork("")); err != nil {
 		t.Fatalf("MineBlockWithErr failed: %v", err)
 	}
 	if !bc.IsChainValid() {

@@ -1480,7 +1480,7 @@ func NewRPCHandler(bc *core.Blockchain, peerServer *PeerServer, limiter *IPRateL
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"status":  "error",
-				"message": "Invalid miner address: must be a valid Armaxcoin address (armx1..., A..., or 40-hex)",
+				"message": "Invalid miner address: must be a valid Armaxcoin address for this network (" + core.ActiveAddressHRP() + "1...)",
 			})
 			return
 		}

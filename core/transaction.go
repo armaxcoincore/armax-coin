@@ -297,7 +297,8 @@ func (tx *Transaction) MarshalBinary() ([]byte, error) {
 	}
 
 	var recipPayload []byte
-	if hrp, p, err := Bech32Decode(tx.Recipient); err == nil && hrp == Bech32HRP && len(p) == AddressPayloadLen {
+	// Any built-in network prefix uses the compact payload encoding; see appendBlockBinaryHeader.
+	if hrp, p, err := Bech32Decode(tx.Recipient); err == nil && isKnownAddressHRP(hrp) && len(p) == AddressPayloadLen {
 		recipPayload = p
 	} else {
 		flags |= txFlagRawRecipient
@@ -463,7 +464,7 @@ func (tx *Transaction) UnmarshalBinary(data []byte) error {
 		if off+AddressPayloadLen > len(data) {
 			return errors.New("unexpected EOF reading recipient payload")
 		}
-		addr, err := Bech32Encode(Bech32HRP, data[off:off+AddressPayloadLen])
+		addr, err := Bech32Encode(ActiveAddressHRP(), data[off:off+AddressPayloadLen])
 		if err != nil {
 			return fmt.Errorf("failed encoding recipient address: %w", err)
 		}

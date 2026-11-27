@@ -112,7 +112,7 @@ func TestCheckpoints_BlockRejectionOnMismatch(t *testing.T) {
 	defer cleanup()
 
 	// Create a valid block #1 with a DIFFERENT hash
-	minerAddr := "armx1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqplwcdd"
+	minerAddr := GenesisMinerForNetwork("")
 	cb := Transaction{
 		Sender:    "SYSTEM",
 		Recipient: minerAddr,
@@ -193,7 +193,7 @@ func TestCheckpoints_ReorganizationBlockedByCheckpoint(t *testing.T) {
 	}
 	defer bc.Close()
 
-	minerAddr := "armx1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqplwcdd"
+	minerAddr := GenesisMinerForNetwork("")
 	mineBlock := func(prev Block) Block {
 		cb := Transaction{
 			Sender:    "SYSTEM",
@@ -296,7 +296,7 @@ func TestStorage_FullWriteAndMiningLifecycleAfterReadOnlyCheck(t *testing.T) {
 		t.Fatalf("expected chain length 1, got %d", len(bc1.Chain))
 	}
 
-	minerAddr := "armx1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqplwcdd"
+	minerAddr := GenesisMinerForNetwork("")
 	mineAndAdd := func(bc *Blockchain) Block {
 		prev := bc.GetLatestBlock()
 		cb := Transaction{
@@ -453,14 +453,14 @@ func TestCheckpoints_ConsensusNetworkIdentityStrictness(t *testing.T) {
 
 	// Mine 1 block on mainnet
 	_ = SetNetwork("mainnet")
-	mainBlock, err := mainBC.MineBlockWithErr(GenesisMiner)
+	mainBlock, err := mainBC.MineBlockWithErr(GenesisMinerForNetwork(""))
 	if err != nil {
 		t.Fatalf("Failed to mine mainnet block: %v", err)
 	}
 
 	// Mine 1 block on regtest
 	_ = SetNetwork("regtest")
-	testBlock, err := testBC.MineBlockWithErr(GenesisMiner)
+	testBlock, err := testBC.MineBlockWithErr(GenesisMinerForNetwork(""))
 	if err != nil {
 		t.Fatalf("Failed to mine regtest block: %v", err)
 	}
