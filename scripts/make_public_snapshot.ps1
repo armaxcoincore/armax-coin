@@ -310,8 +310,17 @@ try {
             throw "git archive failed with exit code $LASTEXITCODE"
         }
 
-        # Extract tar archive into staging directory
-        tar -xf $tempArchive -C $stagingDir
+        # Extract tar archive into staging directory.
+        # Prefer the Windows-bundled bsdtar: when Git for Windows' GNU tar comes first on PATH,
+        # it parses drive-letter paths such as "C:\..." as a remote "host:path" archive and fails.
+        $tarExe = 'tar'
+        if (-not [string]::IsNullOrEmpty($env:SystemRoot)) {
+            $systemTar = Join-Path $env:SystemRoot 'System32\tar.exe'
+            if (Test-Path -LiteralPath $systemTar) {
+                $tarExe = $systemTar
+            }
+        }
+        & $tarExe -xf $tempArchive -C $stagingDir
         if ($LASTEXITCODE -ne 0) {
             throw "tar extraction failed with exit code $LASTEXITCODE"
         }
