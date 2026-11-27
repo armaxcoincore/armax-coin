@@ -24,6 +24,14 @@ const (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "multisig" {
+		os.Exit(runMultisig(os.Args[2:], multisigEnv{
+			stdout:     os.Stdout,
+			stderr:     os.Stderr,
+			stdin:      os.Stdin,
+			passphrase: func() (string, error) { return getPassphrase(false) },
+		}))
+	}
 	flag.Usage = printUsage
 	networkPtr := flag.String("network", "testnet", "Network profile (testnet, mainnet) [L1-3, L4-1]")
 	localMainnetPtr := flag.Bool("local-mainnet", false, "Enable strictly local, isolated Mainnet mode (loopback only, no public seeds) [L4-1]")
@@ -273,6 +281,7 @@ Usage:
   armwallet -gettransaction <TXID> [-daemon <URL>]       show transaction details
   armwallet -mempool [-daemon <URL>]                     show unconfirmed transactions
   armwallet -rescan [-wallet <FILE>]                     rescan transaction history
+  armwallet multisig <subcommand> ...                    air-gapped M-of-N custody (see 'armwallet multisig help')
 
 Environment:
   ARMX_NETWORK            network profile (testnet, mainnet)
