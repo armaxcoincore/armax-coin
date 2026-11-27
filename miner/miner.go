@@ -66,6 +66,10 @@ type BlockTemplate struct {
 	Transactions      []core.Transaction `json:"transactions"`
 	MerkleRoot        string             `json:"merkleroot"`
 	PoWAlgo           string             `json:"pow_algo,omitempty"`
+	// Treasury split (additive; absent from older daemons, which never activate it).
+	TreasuryActive  bool   `json:"treasury_active,omitempty"`
+	TreasuryAddress string `json:"treasury_address,omitempty"`
+	TreasuryValue   int64  `json:"treasury_value,omitempty"`
 }
 
 type SubmitBlockResponse struct {
@@ -129,6 +133,9 @@ func validateMinedBlockTemplate(tmpl *BlockTemplate) (*big.Int, error) {
 	}
 	if tmpl.CoinbaseValue < 0 {
 		return nil, fmt.Errorf("invalid negative coinbase value %d", tmpl.CoinbaseValue)
+	}
+	if tmpl.TreasuryActive && (tmpl.TreasuryValue <= 0 || !core.ValidateAddress(tmpl.TreasuryAddress)) {
+		return nil, fmt.Errorf("block template has treasury_active but an invalid treasury address or value")
 	}
 	trimmedTarget := strings.TrimSpace(tmpl.Target)
 	var targetInt *big.Int
@@ -673,7 +680,18 @@ func main() {
 			Nonce:     int64(tmpl.Height), // Coinbase nonce equals block height
 			Signature: "REWARD_SIG",
 		}
-		txs := append([]core.Transaction{cbTx}, tmpl.Transactions...)
+		txs := []core.Transaction{cbTx}
+		if tmpl.TreasuryActive {
+			// tx[1] treasury coinbase must directly follow tx[0] while the split is active.
+			txs = append(txs, core.Transaction{
+				Sender:    "SYSTEM",
+				Recipient: tmpl.TreasuryAddress,
+				Amount:    tmpl.TreasuryValue,
+				Nonce:     int64(tmpl.Height),
+				Signature: core.TreasuryRewardSignature,
+			})
+		}
+		txs = append(txs, tmpl.Transactions...)
 		candidateBlock := *core.NewBlock(txs, tmpl.PreviousBlockHash, tmpl.Height, minerAddress, targetInt)
 		now := time.Now().Unix()
 		clockOffset, clockWarn := clockOffsetFromTemplate(now, tmpl.CurTime)

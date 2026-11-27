@@ -77,6 +77,12 @@ type NetworkProfile struct {
 	// spends (SigAlg 0x02). Zero or negative disables them, so a profile that omits the field
 	// fails closed. Genesis #0 carries no user transactions, so 1 means "from launch".
 	MultisigActivationHeight int64 `json:"multisig_activation_height,omitempty"`
+	// TreasurySplitEndHeight is the last block height of the 80/20 dual-coinbase subsidy split
+	// (blocks #1..end). Zero or negative disables it.
+	TreasurySplitEndHeight int64 `json:"treasury_split_end_height,omitempty"`
+	// TreasuryAddress receives the tx[1] treasury coinbase while the split is active. The split
+	// stays inactive while it is empty, so no block can pay an unpublished address.
+	TreasuryAddress string `json:"treasury_address,omitempty"`
 }
 
 var (
@@ -107,6 +113,10 @@ var (
 		},
 		AddressHRP:               MainnetAddressHRP,
 		MultisigActivationHeight: 1, // Treasury custody multisig from the first spendable block
+		TreasurySplitEndHeight:   108000,
+		// TreasuryAddress is intentionally empty until the Founder publishes the Mainnet M-of-N
+		// treasury multisig; TestMainnetLaunchRequiresTreasuryAddress blocks launch without it.
+		TreasuryAddress: "",
 		DefaultSeeds: []string{
 			"id.armax-coin.cloud:" + MainnetP2PPort,
 			"armax-coin.cloud:" + MainnetP2PPort,
@@ -192,6 +202,8 @@ var (
 		DefaultSeeds:                []string{},
 		AddressHRP:                  RegtestAddressHRP,
 		MultisigActivationHeight:    1,
+		TreasuryAddress:             RegtestTreasuryAddress,
+		TreasurySplitEndHeight:      -1, // Enabled per run: ARMX_TREASURY_SPLIT_END_HEIGHT or SetTreasurySplitEndHeight
 
 		TimestampRulesActivationHeight:       -1,
 		FutureTimestampLimitActivationHeight: -1,

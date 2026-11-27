@@ -579,8 +579,12 @@ func applyAndVerifyPreSnapshotBlock(b *Block, expected map[string]AccountState, 
 		return 0, fmt.Errorf("block has no transactions")
 	}
 
+	firstUserTx := FirstUserTxIndex(b.Index)
+	if len(b.Transactions) < firstUserTx {
+		return 0, fmt.Errorf("block #%d is missing the tx[1] treasury coinbase", b.Index)
+	}
 	var blockFees int64 = 0
-	for idx := 1; idx < len(b.Transactions); idx++ {
+	for idx := firstUserTx; idx < len(b.Transactions); idx++ {
 		tx := b.Transactions[idx]
 		if strings.EqualFold(tx.Sender, "SYSTEM") || strings.EqualFold(tx.Recipient, "SYSTEM") {
 			return 0, fmt.Errorf("block #%d tx #%d invalid SYSTEM sender/recipient", b.Index, idx)
@@ -645,7 +649,11 @@ func applyAndVerifyPreSnapshotBlock(b *Block, expected map[string]AccountState, 
 	if strings.EqualFold(cb.Recipient, "SYSTEM") || !ValidateAddress(cb.Recipient) {
 		return 0, fmt.Errorf("block #%d invalid coinbase recipient %q", b.Index, cb.Recipient)
 	}
-	if allowedReward < 0 || allowedReward > math.MaxInt64-blockFees || cb.Amount > allowedReward+blockFees {
+	var treasuryShare int64
+	if firstUserTx == 2 {
+		treasuryShare = TreasuryShare(allowedReward)
+	}
+	if allowedReward < 0 || allowedReward > math.MaxInt64-blockFees || cb.Amount > allowedReward-treasuryShare+blockFees {
 		return 0, fmt.Errorf("block #%d coinbase reward exceeds allowed %d + fees %d", b.Index, allowedReward, blockFees)
 	}
 	minerHex, err := AddressToHexCached(cb.Recipient)
@@ -666,6 +674,27 @@ func applyAndVerifyPreSnapshotBlock(b *Block, expected map[string]AccountState, 
 	minerAcc = minerAcc.PruneMatured(b.Index, maturity)
 	expected[minerHex] = minerAcc
 
+	if firstUserTx == 2 {
+		tt := b.Transactions[1]
+		if err := validateTreasuryCoinbase(&tt, b.Index, allowedReward, ValidateAddress); err != nil {
+			return 0, err
+		}
+		treasuryHex, err := AddressToHexCached(tt.Recipient)
+		if err != nil {
+			return 0, fmt.Errorf("block #%d invalid treasury coinbase recipient: %w", b.Index, err)
+		}
+		treasuryAcc := cloneAccountState(expected[treasuryHex])
+		if treasuryAcc.Balance > MaxSupply-tt.Amount {
+			return 0, fmt.Errorf("block #%d treasury balance exceeds MaxSupply", b.Index)
+		}
+		treasuryAcc.Balance += tt.Amount
+		if maturity > 0 && tt.Amount > 0 {
+			treasuryAcc.Immature = append(treasuryAcc.Immature, ImmatureReward{Amount: tt.Amount, Height: b.Index})
+		}
+		treasuryAcc = treasuryAcc.PruneMatured(b.Index, maturity)
+		expected[treasuryHex] = treasuryAcc
+		return cb.Amount - blockFees + tt.Amount, nil
+	}
 	return cb.Amount - blockFees, nil
 }
 
