@@ -1,21 +1,21 @@
-# Mainnet Treasury Subsidy Split — Dual-Coinbase Consensus Specification (Proposed — Not Implemented)
+# Mainnet Treasury Subsidy Split — Dual-Coinbase Consensus Specification (Implemented — Inactive)
 
-**Status: PROPOSED SPECIFICATION — NOT IMPLEMENTED (`core.MainnetLaunched = false`).** This document defines the exact consensus contract for the preliminary `80% / 20%` Mainnet subsidy split described in [`../../governance/TREASURY_MIGRATION_PLAN.md`](../../governance/TREASURY_MIGRATION_PLAN.md) (`v1.3`). Current source still rejects every `SYSTEM` transaction at block index `>= 1`; nothing here is active on any network until it is implemented, independently reviewed, and ratified.
+**Status: IMPLEMENTED IN `v1.0.13`, INACTIVE ON EVERY PUBLIC NETWORK (`core.MainnetLaunched = false`).** This document defines the consensus contract for the preliminary `80% / 20%` Mainnet subsidy split described in [`../../governance/TREASURY_MIGRATION_PLAN.md`](../../governance/TREASURY_MIGRATION_PLAN.md) (`v1.3`). The rules are implemented in `core/treasury.go`, `core/state.go`, `core/storage.go` and `core/blockchain.go`. The split stays **off** until `MainnetProfile.TreasuryAddress` is set to the published Treasury multisig address. That address is intentionally empty today, and a test blocks a Mainnet launch without it. Mainnet launch, the final address, and the parameters still require independent review and Founder ratification.
 
 > [!IMPORTANT]
 > `ARMX-TESTNET-1` is **not** affected: the split stays disabled (`-1`), Testnet blocks, transaction hashes, Genesis, and addresses (`armx1…`) remain byte-identical to `v1.0.12`, and active Testnet nodes stay rolling-compatible.
 
 ## 1. Scope and Parameters
 
-| Parameter | Value | Location (planned) |
+| Parameter | Value | Location |
 |---|---|---|
 | Base subsidy | `60 ARMX` (`InitialReward`, halving every `1,050,000` blocks) | `core/blockchain.go` (unchanged) |
-| Treasury share | `treasuryShare = (allowedBlockReward * 20) / 100` (integer `int64`) | `core/state.go` |
+| Treasury share | `TreasuryShare(allowedBlockReward) = (allowedBlockReward * 20) / 100` (integer `int64`) | `core/treasury.go` |
 | Miner base share | `minerBaseShare = allowedBlockReward - treasuryShare` | `core/state.go` |
-| Split window | Blocks `#1..TreasurySplitEndHeight` | `core/network.go` |
-| `TreasurySplitEndHeight` | Mainnet `108000`; Regtest short local window (for example `200`); Testnet & Soak `-1` (disabled) | `NetworkProfile` |
-| `TreasuryAddress` | Mainnet: published `ax1…` `M-of-N` ML-DSA-65 multisig address; Regtest: test-only fixture multisig | `NetworkProfile` |
-| Active predicate | `IsTreasurySplitActive(h) = TreasurySplitEndHeight >= 1 && 1 <= h && h <= TreasurySplitEndHeight` (always `false` at `h = 0`) | `core/network.go` |
+| Split window | Blocks `#1..TreasurySplitEndHeight` | `core/treasury.go` |
+| `TreasurySplitEndHeight` | Mainnet `108000`; Regtest `-1` by default (off), set per test run with `ARMX_TREASURY_SPLIT_END_HEIGHT` (Regtest only); Testnet & Soak `-1` (disabled) | `NetworkProfile` |
+| `TreasuryAddress` | Mainnet: **empty** until the Founder publishes the `ax1…` `M-of-N` ML-DSA-65 multisig address (split off, launch blocked); Regtest: public test-only 2-of-3 fixture `axrt1jv7vzdww9f7xp2da8tpq4zm3dhy6ztttnc9ltr7sd0vxsvgrmp4sspy090` (seeds `SHA-256("armax-regtest-treasury-fixture:<i>")`, never use outside Regtest) | `NetworkProfile` |
+| Active predicate | `IsTreasurySplitActive(h) = TreasurySplitEndHeight >= 1 && 1 <= h && h <= TreasurySplitEndHeight && TreasuryAddress != ""` (always `false` at `h = 0`) | `core/treasury.go` |
 
 With `allowedBlockReward = 6,000,000,000` Armoids (`60 ARMX`), `treasuryShare = 1,200,000,000` (`12 ARMX`) and `minerBaseShare = 4,800,000,000` (`48 ARMX`). No halving occurs inside `#1..#108,000`, so `108,000 × 12 = 1,296,000 ARMX` exactly.
 
@@ -46,7 +46,7 @@ When `IsTreasurySplitActive(b.Index)` is `true`, a valid block has `len(b.Transa
 
 - `totalFees` is the sum of `Fee` over `tx[2..]`; `100%` of fees go to the miner through `tx[0]`.
 - A miner may under-claim `tx[0]` (existing behavior); `tx[1]` may not be under- or over-paid.
-- `tx[0]` and `tx[1]` share `Nonce == int64(b.Index)` but differ in `Recipient`/`Amount`/`Signature`, so their transaction hashes differ even when the miner's address equals `TreasuryAddress`.
+- `tx[0]` and `tx[1]` share `Nonce == int64(b.Index)`. The transaction hash does **not** cover `Signature`. So if the miner's address equals `TreasuryAddress` **and** `tx[0].Amount == treasuryShare` (an under-claim of exactly `12 ARMX`), the two coinbases have the same hash, and the block is rejected as containing a duplicate transaction. Any other `tx[0]` amount gives distinct hashes. A miner paying itself to the Treasury address must claim a different amount. This is described for operators in [`../../MINING_GUIDE.md`](../../MINING_GUIDE.md).
 
 When the split is **not** active (Mainnet `#0`, Mainnet `#108,001+`, all of Testnet and Soak), the current rule is unchanged: only `tx[0]` may be `SYSTEM`, and any `SYSTEM` transaction at index `>= 1` is rejected.
 
@@ -78,9 +78,11 @@ When `treasury_active` is `true`, the block assembler must place `tx[0]`, then `
 
 ### 5.2 Miners and Pools
 
-`armminer`, the GUI miner, and `/mine` add `tx[1]` whenever `treasury_active` is `true`. External Stratum pool software must do the same; a pool that omits `tx[1]` produces invalid Mainnet blocks during `#1..#108,000`. This is documented for operators in [`../../MINING_GUIDE.md`](../../MINING_GUIDE.md) once implemented.
+`armminer`, the GUI miner, and `/mine` add `tx[1]` whenever `treasury_active` is `true`. External Stratum pool software must do the same. A pool that omits `tx[1]` produces invalid Mainnet blocks during `#1..#108,000`, and so does a `v1.0.12` miner. This is documented for operators in [`../../MINING_GUIDE.md`](../../MINING_GUIDE.md).
 
 ## 6. Test Requirements
+
+Implemented in `core/treasury_split_test.go` and `node/treasury_template_test.go`. A live two-node Regtest run across the window end, with in-process and external `armminer` mining and supply parity after `-reindex`, passed in the `v1.0.13` Security Review Round 3.
 
 - Boundary heights `#0`, `#1`, `#108,000`, `#108,001` (and the Regtest equivalents).
 - Reject: missing `tx[1]`, wrong amount, wrong recipient, wrong sentinel, non-zero fee, non-empty `SenderPub`, wrong nonce, invalid `SigAlg`/`Type`/HTLC fields, `SYSTEM` at index `>= 2`, and `tx[1]` on Testnet/Soak.
