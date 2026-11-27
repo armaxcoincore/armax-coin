@@ -2,7 +2,7 @@
 
 ## Armaxcoin v1.0.13
 
-**Target Release:** Armaxcoin v1.0.13 — P2P DoS & Slot Isolation Hardening, Consensus/Storage Integrity, Wallet/Miner/GUI Security & Peer Privacy, and `github.com/armaxcoincore/armax-coin` Migration
+**Target Release:** Armaxcoin v1.0.13 — P2P DoS & Slot Isolation Hardening, Consensus/Storage Integrity, Wallet/Miner/GUI Security & Peer Privacy, `github.com/armaxcoincore/armax-coin` Migration, and Mainnet-Gated Multisig Custody, Treasury Split & Per-Network Addresses
 
 **Release Date:** 2026-11-27
 
@@ -18,6 +18,8 @@
    - Added ML-DSA-65 key/seed zeroization, full pre-snapshot block (`validateBlockContext` + `tx.Verify()`) and per-account snapshot verification on `LoadFromFile`, reorg mempool sender-nonce ordering, `Option 1A` Mainnet strict canonical hex/coinbase/Genesis enforcement (preserving `v1.0.12` Testnet compatibility), `Option 2A-i` `MempoolBinaryFeeActivationHeight` separation, serialized `ResolveFork` for overlapping reorganizations, per-peer expiring sync gate height claims, and pinned NIST ACVP / Wycheproof / end-to-end protocol vectors for ML-DSA-65 in project CI.
 3. **Wallet, GUI Peer Privacy, Miner, Build & Adversarial Verification (`wallet/`, `gui/`, `miner/`, `scripts/` — PR `#27`–`#31`, `#34`, `#35`):**
    - Enforced atomic `0600` keystore writes, `1 MiB` bounded reads, buffer zeroization, strict 24-word BIP-39 checksum validation, GUI localhost origin verification + constant-time session tokens, backend-level GUI peer IP & local username path redaction (`Public Node` / `[hidden-ip]` while keeping DNS seeds and CLI outputs intact), Overview Network card PoW Algorithm (`ArmaxHash v2`) vs. Difficulty Adjustment (`Armax-ASERT-AW`) separation, Stratum `256 KiB` line framing, `CGO_ENABLED=0` + `-trimpath -ldflags="-s -w -buildid="` in `scripts/build.sh`, PR concurrency & 1-day artifact retention, `go.mod`/`go.sum` dependency pruning, an 8-scenario adversarial + `375` ML-DSA-65 tx full-block benchmark suite (`393.50ms` verify, `215.27ms` TLS P2P E2E), and updated SHA-pinned GitHub Actions (`checkout` `v7.0.1`, `setup-go` `v7.1.0`, `upload-artifact` `v7.0.2`, `download-artifact` `v8.0.2`) plus the `golang.org/x` module group (`crypto` `v0.59.0`, `sys` `v0.50.0`, `term` `v0.48.0`, `text` `v0.44.0`).
+4. **Mainnet-Gated Custody, Treasury, Migration & Network Isolation (`core/`, `node/`, `miner/`, `wallet/`, `cli/` — PR `#37`–`#46`):**
+   - Per-network address prefixes (Mainnet `ax`, Regtest `axrt`, Soak `axsk`; Testnet keeps `armx`) with a recomputed, unlaunched Mainnet Genesis; wallet, CLI, and GUI refuse cross-network recipients, keystores, and daemons before signing; ML-DSA-65 M-of-N multisig custody (`sig_alg 0x02`) with an air-gapped `armwallet multisig` flow; the Mainnet dual-coinbase `80% / 20%` Treasury split for Blocks `#1..#108,000` (implemented, inactive until the Treasury address is published); Mainnet-only hybrid ML-KEM P2P TLS with ML-DSA-65 node identities and per-subnet pre-TLS rate limiting; the offline `armreconcile` migration toolkit; the preliminary `v1.3` Treasury plan; a CI `gofmt` gate; and test deflaking. Multisig and the Treasury split are disabled on Testnet, whose consensus, Genesis, and address prefix are unchanged.
 
 ---
 

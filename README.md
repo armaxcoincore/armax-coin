@@ -1,7 +1,7 @@
 # Armaxcoin (`armax-coin`)
 
 **Canonical Repository:** [github.com/armaxcoincore/armax-coin](https://github.com/armaxcoincore/armax-coin)  
-**Current Release:** `v1.0.13` (P2P DoS & Slot Hardening, Sync Gate & Reorg Safety, Consensus/Storage Integrity, Wallet/GUI Privacy & Security, Go `1.27.4`; Rolling Compatible with `v1.0.10`–`v1.0.12`)
+**Current Release:** `v1.0.13` (P2P DoS & Slot Hardening, Sync Gate & Reorg Safety, Consensus/Storage Integrity, Wallet/GUI Privacy & Security, Wallet Network Send Guard, Mainnet-Gated Multisig Custody & Treasury Split, Go `1.27.4`; Rolling Compatible with `v1.0.10`–`v1.0.12`)
 **Go Module:** `github.com/armaxcoincore/armax-coin`
 
 Armaxcoin is an open-source, experimental Layer-1 Proof-of-Work (PoW) cryptocurrency engineered for post-quantum transaction security (NIST FIPS 204, ML-DSA-65), accessibility, and high performance across commodity personal computers and ARM-based devices (Armbian, Raspberry Pi 4/5, Orange Pi).
