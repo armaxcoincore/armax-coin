@@ -81,10 +81,38 @@ type CryptoJSON struct {
 }
 
 type KeystoreFile struct {
-	Version   int        `json:"version"`
-	Address   string     `json:"address"`
-	PublicKey string     `json:"public_key"`
-	Crypto    CryptoJSON `json:"crypto"`
+	Version   int    `json:"version"`
+	Address   string `json:"address"`
+	PublicKey string `json:"public_key"`
+	// Network is the Network ID the keystore was created for. Keystores written before this field
+	// existed omit it; their network is inferred from the stored address prefix (all such
+	// keystores are Testnet keystores).
+	Network string     `json:"network,omitempty"`
+	Crypto  CryptoJSON `json:"crypto"`
+}
+
+// AllowForeignNetworkKeystoreEnv names the environment variable that, when set to "1", lets a
+// keystore created for another network be unlocked on the active network. It exists only for
+// deliberate recovery; reusing Testnet keys on Mainnet is strongly discouraged.
+const AllowForeignNetworkKeystoreEnv = "ARMX_ALLOW_FOREIGN_NETWORK_KEYSTORE"
+
+// keystoreNetworkID returns the network a keystore belongs to: the explicit Network field, or the
+// network implied by the stored address prefix. An empty result means it cannot be determined.
+func keystoreNetworkID(ks *KeystoreFile) (string, error) {
+	addrNet, addrOK := core.NetworkIDForAddress(ks.Address)
+	if ks.Network != "" {
+		if _, ok := core.AddressHRPForNetwork(ks.Network); !ok {
+			return "", fmt.Errorf("keystore names unknown network %q", ks.Network)
+		}
+		if addrOK && !strings.EqualFold(addrNet, ks.Network) {
+			return "", errors.New("keystore integrity failure: network field does not match stored address prefix")
+		}
+		return strings.ToUpper(ks.Network), nil
+	}
+	if addrOK {
+		return addrNet, nil
+	}
+	return "", nil
 }
 
 func writeFileAtomic0600(filePath string, data []byte, tmpPattern string) error {
@@ -201,6 +229,7 @@ func EncryptAndSaveKeystore(w *Wallet, passphrase, filePath string) error {
 		Version:   KeystoreVersion,
 		Address:   w.Address,
 		PublicKey: w.PublicKey,
+		Network:   core.NetworkID(),
 		Crypto: CryptoJSON{
 			Cipher:     "aes-256-gcm",
 			Ciphertext: hex.EncodeToString(ciphertext),
@@ -296,6 +325,20 @@ func DecryptAndLoadKeystore(passphrase, filePath string) (*Wallet, error) {
 		return nil, fmt.Errorf("unsupported crypto suite: %s/%s", ks.Crypto.KDF, ks.Crypto.Cipher)
 	}
 
+	// 1b. Network binding: refuse a keystore of another network before the passphrase is used,
+	// so a Testnet key is never unlocked on Mainnet (or vice versa) by accident.
+	ksNetID, err := keystoreNetworkID(&ks)
+	if err != nil {
+		return nil, err
+	}
+	activeNetID := core.NetworkID()
+	foreignNetwork := ksNetID != "" && !strings.EqualFold(ksNetID, activeNetID)
+	allowForeign := os.Getenv(AllowForeignNetworkKeystoreEnv) == "1"
+	if foreignNetwork && !allowForeign {
+		return nil, fmt.Errorf("keystore belongs to network %s; active network is %s (refusing to unlock; set %s=1 only for deliberate recovery)",
+			ksNetID, activeNetID, AllowForeignNetworkKeystoreEnv)
+	}
+
 	// 2. Strict KDF parameter range validation BEFORE calling argon2.IDKey [Phase 3, Follow-up Point 1, Point 3]
 	kdf := ks.Crypto.KDFParams
 	if err := ValidateKDFParameters(kdf); err != nil {
@@ -362,15 +405,25 @@ func DecryptAndLoadKeystore(passphrase, filePath string) (*Wallet, error) {
 		return nil, err
 	}
 
-	// Verify cryptographic binding between decrypted seed and unencrypted keystore metadata
-	if ks.Address != "" && !core.MatchAddress(ks.Address, w.Address) {
-		w.Zeroize()
-		// A keystore created on another network stores that network's address prefix. Report it
-		// clearly instead of as tampering; it still fails closed.
-		if netID, ok := core.NetworkIDForAddress(ks.Address); ok && netID != core.NetworkID() {
-			return nil, fmt.Errorf("keystore belongs to network %s; active network is %s", netID, core.NetworkID())
+	// Verify cryptographic binding between decrypted seed and unencrypted keystore metadata.
+	// w.Address is always derived for the active network.
+	if ks.Address != "" {
+		bound := core.MatchAddress(ks.Address, w.Address)
+		if !bound && foreignNetwork {
+			// Deliberate foreign-network unlock: the stored address carries the other network's
+			// prefix, so compare the network-independent payloads instead.
+			storedHex, errStored := core.AddressToHexForNetwork(ks.Address, ksNetID)
+			derivedHex, errDerived := core.AddressToHex(w.Address)
+			bound = errStored == nil && errDerived == nil && storedHex == derivedHex
 		}
-		return nil, errors.New("keystore integrity failure: stored address does not match decrypted private key")
+		if !bound {
+			w.Zeroize()
+			return nil, errors.New("keystore integrity failure: stored address does not match decrypted private key")
+		}
+	}
+	if foreignNetwork {
+		core.LogWarn(core.LogCategoryValidation, "keystore created for %s unlocked on %s via %s=1; reusing keys across networks is discouraged",
+			ksNetID, activeNetID, AllowForeignNetworkKeystoreEnv)
 	}
 	if ks.PublicKey != "" && !strings.EqualFold(strings.TrimSpace(ks.PublicKey), w.PublicKey) {
 		w.Zeroize()

@@ -302,6 +302,46 @@ func TestAF05_ArmsendPreSignValidationAndBroadcastFlow(t *testing.T) {
 		t.Fatalf("expected 0 broadcast calls on X-Network-ID mismatch, got %d", broadcastCalls)
 	}
 
+	// Case 3b: Missing X-Network-ID fails closed before signing/broadcast
+	mu.Lock()
+	balanceNetID = ""
+	mu.Unlock()
+	atomic.StoreInt32(&broadcastCalls, 0)
+	out, code = runArmsendWithEnv(t, env,
+		"-network", "testnet",
+		"-daemon", srv.URL,
+		"-wallet", walletPath,
+		"-to", recipientWallet.Address,
+		"-amount", "1.0",
+	)
+	if code == 0 || !strings.Contains(out, "did not report X-Network-ID") {
+		t.Fatalf("expected fail-closed error on missing X-Network-ID, code=%d out=%s", code, out)
+	}
+	if atomic.LoadInt32(&broadcastCalls) != 0 {
+		t.Fatalf("expected 0 broadcast calls on missing X-Network-ID, got %d", broadcastCalls)
+	}
+
+	// Case 3c: A recipient of another network (Mainnet ax1...) is rejected in the wallet before
+	// /balance is queried or anything is signed.
+	mu.Lock()
+	balanceNetID = "ARMX-TESTNET-1"
+	mu.Unlock()
+	atomic.StoreInt32(&balanceCalls, 0)
+	atomic.StoreInt32(&broadcastCalls, 0)
+	out, code = runArmsendWithEnv(t, env,
+		"-network", "testnet",
+		"-daemon", srv.URL,
+		"-wallet", walletPath,
+		"-to", reencodeAddressForTest(t, recipientWallet.Address, core.MainnetAddressHRP),
+		"-amount", "1.0",
+	)
+	if code == 0 || !strings.Contains(out, "Rejected before signing") || !strings.Contains(out, "ARMX-MAINNET-1") {
+		t.Fatalf("expected cross-network recipient rejection, code=%d out=%s", code, out)
+	}
+	if atomic.LoadInt32(&balanceCalls) != 0 || atomic.LoadInt32(&broadcastCalls) != 0 {
+		t.Fatalf("expected no daemon calls for cross-network recipient, got balance=%d broadcast=%d", balanceCalls, broadcastCalls)
+	}
+
 	// Case 4: Valid matching network and sufficient balance signs and broadcasts successfully
 	mu.Lock()
 	balanceNetID = "ARMX-TESTNET-1"
@@ -352,6 +392,28 @@ func reencodeAddressForTest(t *testing.T, testnetAddr, hrp string) string {
 	return addr
 }
 
+// retagKeystoreNetworkForTest rewrites a keystore's network tag, so a keystore written by this
+// Testnet test process can stand in for one created on another network.
+func retagKeystoreNetworkForTest(t *testing.T, path, netID string) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read keystore: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse keystore: %v", err)
+	}
+	doc["network"] = netID
+	out, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal keystore: %v", err)
+	}
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		t.Fatalf("write keystore: %v", err)
+	}
+}
+
 // TestArmsendBinaryFeeHeightPreSignBalanceCheck verifies REV-T4-02:
 // armsend queries /stats for nextHeight BEFORE the pre-sign spendable balance check, so when
 // MempoolBinaryFeeActivationHeight is active at nextHeight (6,000 Armoids) while height 0 is
@@ -381,6 +443,7 @@ func TestArmsendBinaryFeeHeightPreSignBalanceCheck(t *testing.T) {
 	if err := wallet.EncryptAndSaveKeystore(senderWallet, passphrase, walletPath); err != nil {
 		t.Fatalf("EncryptAndSaveKeystore failed: %v", err)
 	}
+	retagKeystoreNetworkForTest(t, walletPath, "ARMX-REGTEST-1")
 
 	const sendAmount int64 = 1 * core.CoinUnit
 	const exactBinaryBalance int64 = sendAmount + 6000 // < sendAmount + 11000
