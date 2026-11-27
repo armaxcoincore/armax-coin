@@ -258,7 +258,10 @@ func parseMultisigWitness(d *MultisigDescriptor, w []byte) ([]multisigSigner, er
 	if bits.OnesCount8(bitmap) != d.M {
 		return nil, fmt.Errorf("multisig witness bitmap has %d signers, want exactly %d", bits.OnesCount8(bitmap), d.M)
 	}
-	signers := make([]multisigSigner, 0, d.M)
+	// Size the slice from the consensus bound, not from d.M: the descriptor arrives from the
+	// network, and a fixed capacity keeps this allocation independent of decoded input even if a
+	// caller ever skips descriptor validation.
+	signers := make([]multisigSigner, 0, MultisigMaxSigners)
 	off := 1
 	for i := 0; i < d.N(); i++ {
 		if bitmap&(1<<uint(i)) == 0 {
