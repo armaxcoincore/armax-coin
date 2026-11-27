@@ -115,7 +115,7 @@ var (
 		MultisigActivationHeight: 1, // Treasury custody multisig from the first spendable block
 		TreasurySplitEndHeight:   108000,
 		// TreasuryAddress is intentionally empty until the Founder publishes the Mainnet M-of-N
-		// treasury multisig; TestMainnetLaunchRequiresTreasuryAddress blocks launch without it.
+		// treasury multisig; TestTreasurySplit_ProfilesAndLaunchGate blocks launch without it.
 		TreasuryAddress: "",
 		DefaultSeeds: []string{
 			"id.armax-coin.cloud:" + MainnetP2PPort,
