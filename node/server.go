@@ -1118,6 +1118,11 @@ func NewRPCHandler(bc *core.Blockchain, peerServer *PeerServer, limiter *IPRateL
 		if core.IsBlockBinarySizeActive(nextHeight) {
 			maxAllowedSize = core.MaxBlockSize
 		}
+		treasuryActive := core.IsTreasurySplitActive(nextHeight)
+		if treasuryActive {
+			maxAllowedTxs-- // tx[1] treasury coinbase
+			maxAllowedSize -= 128
+		}
 		candidateTxs, totalFees := bc.SelectCandidateTransactionsLocked(maxAllowedTxs, maxAllowedSize)
 
 		minTs := core.MinValidTimestamp(bc.Chain, &latest, latest.Index+1)
@@ -1152,7 +1157,15 @@ func NewRPCHandler(bc *core.Blockchain, peerServer *PeerServer, limiter *IPRateL
 			candidateTxs = []core.Transaction{}
 		}
 
-		coinbaseValue := blockReward + totalFees
+		// coinbasevalue is always the maximum value of tx[0]; while the split is active the
+		// assembler must also add tx[1] (treasury_address, treasury_value) right after it.
+		var treasuryAddress string
+		var treasuryValue int64
+		if treasuryActive {
+			treasuryAddress = core.GetTreasuryAddress()
+			treasuryValue = core.TreasuryShare(blockReward)
+		}
+		coinbaseValue := blockReward - treasuryValue + totalFees
 		merkleRoot := core.CalculateMerkleRoot(candidateTxs)
 		powAlgo := "sha256d"
 		if core.IsArmaxHashV2Active(latest.Index + 1) {
@@ -1185,6 +1198,9 @@ func NewRPCHandler(bc *core.Blockchain, peerServer *PeerServer, limiter *IPRateL
 			"merkleroot":           merkleRoot,
 			"pow_algo":             powAlgo,
 			"pow_algo_name":        core.GetCurrentPoWAlgoName(latest.Index + 1),
+			"treasury_active":      treasuryActive,
+			"treasury_address":     treasuryAddress,
+			"treasury_value":       treasuryValue,
 		})
 	})
 

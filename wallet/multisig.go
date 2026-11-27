@@ -150,7 +150,7 @@ func NewMultisigSpend(df *MultisigDescriptorFile, recipient string, amount, fee,
 	}
 	if !core.ValidateAddress(recipient) {
 		if netID, ok := core.NetworkIDForAddress(recipient); ok {
-			return nil, fmt.Errorf("rejected before signing:recipient is a %s address; this spend is on %s (expected %s1...)", netID, core.NetworkID(), core.ActiveAddressHRP())
+			return nil, fmt.Errorf("rejected before signing: recipient is a %s address; this spend is on %s (expected %s1...)", netID, core.NetworkID(), core.ActiveAddressHRP())
 		}
 		return nil, fmt.Errorf("invalid recipient address %q (expected %s1...)", recipient, core.ActiveAddressHRP())
 	}
@@ -196,7 +196,7 @@ func (s *MultisigSpendFile) descriptor() (*core.MultisigDescriptor, error) {
 		return nil, errors.New("spend file sender does not match its descriptor")
 	}
 	if !core.ValidateAddress(s.Tx.Recipient) {
-		return nil, fmt.Errorf("rejected before signing:recipient %s is not a %s address", s.Tx.Recipient, core.NetworkID())
+		return nil, fmt.Errorf("rejected before signing: recipient %s is not a %s address", s.Tx.Recipient, core.NetworkID())
 	}
 	if s.Tx.HashHex() != s.TxHash {
 		return nil, errors.New("spend file tx_hash does not match its transaction")

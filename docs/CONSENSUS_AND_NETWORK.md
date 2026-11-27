@@ -25,6 +25,8 @@ Armaxcoin is built from the ground up for the post-quantum era. All user transac
   - Each node and wallet accepts only its own network's prefix, so an address from another network is rejected before signing or validation. Transaction hashes also commit to the Network ID, which prevents cross-network transaction replay.
 - **M-of-N Multisig Custody (`sig_alg` `0x02`):**
   Mainnet and Regtest accept ML-DSA-65 multisig spends from block `#1` (`2 <= M <= 3`, `M <= N <= 4`). Testnet and Soak reject them. The account address is `SHA-256(0x02 || descriptor)`, and spends are always sized in `TxBinaryV1`. See [ML-DSA-65 Multisig Custody](architecture/consensus/mldsa65-multisig-custody.md).
+- **Mainnet Treasury Subsidy Split:**
+  On Mainnet, blocks `#1..#108,000` carry a second protocol coinbase, `tx[1]` (`TREASURY_REWARD_SIG`). It pays exactly 20% of the subsidy (`12 ARMX`) to `TreasuryAddress`, and the miner's `tx[0]` gets the remaining `48 ARMX` plus all fees. The split stays inactive while `TreasuryAddress` is empty, and a launch-gate test blocks Mainnet launch until it is published. It is disabled on Testnet and Soak. On Regtest it is off by default and is enabled with `ARMX_TREASURY_SPLIT_END_HEIGHT`, using a public 2-of-3 fixture multisig.
 
 ### 1.2 Hashing Functions
 - **Block Hashing (Testnet, Blocks 0..519):** Double-SHA256 (`SHA-256d`).

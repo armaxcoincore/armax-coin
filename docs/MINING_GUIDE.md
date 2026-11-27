@@ -35,6 +35,22 @@ ArmaxHash v2 is active from block #2500 on testnet. It uses chained BLAKE2b with
 - **Target Block Time:** `120` seconds (2 minutes).
 - **Difficulty Adjustment:** **Armax-ASERT-AW** (Canonical integer `aserti3-2d`, active from Block #13,335; previously TEDR anti-stall at #13,293 and legacy LWMA-1 $N=60$).
 - **Coinbase Maturity:** 10 confirmations on Testnet (100 blocks on Mainnet) before mined rewards can be spent.
+- **Mainnet Treasury Split (blocks `#1..#108,000`, not active on Testnet):** each block pays `48 ARMX` (plus all fees) to the miner in `tx[0]` and exactly `12 ARMX` to the treasury multisig in `tx[1]`. The split stays inactive until the treasury address is published.
+
+### Pool and Custom Miner Requirements (Treasury Split)
+
+`/getblocktemplate` has three additive fields: `treasury_active`, `treasury_address`, and `treasury_value`. While `treasury_active` is `true`:
+
+- `coinbasevalue` is the maximum value of `tx[0]` only. The treasury share is already excluded.
+- The block must contain these transactions, in this order:
+  1. `tx[0]`, the miner coinbase;
+  2. `tx[1]`, built as `{"sender":"SYSTEM","recipient":<treasury_address>,"amount":<treasury_value>,"nonce":<height>,"signature":"TREASURY_REWARD_SIG"}`;
+  3. the template transactions.
+- The Merkle root covers all of them in that order.
+- A block without `tx[1]`, or with any other amount or recipient, is invalid.
+- If the miner address equals the treasury address, `tx[0]` must not also claim exactly `treasury_value`. That would give the two coinbases the same transaction hash, and the block would be rejected as a duplicate.
+
+`armminer`, the GUI miner, and `/mine` already do this. External Stratum pool software must do the same.
 
 ---
 

@@ -220,9 +220,16 @@ func (sm *StateManager) VerifyAndApplyBlock(b *Block, allowedBlockReward int64, 
 		return orig
 	}
 
-	// 1. First pass: Sum user fees and validate regular transactions (idx >= 1)
+	// While the treasury split is active, tx[1] is the treasury coinbase and user transactions
+	// start at index 2; otherwise any SYSTEM transaction at index >= 1 is rejected below.
+	firstUserTx := FirstUserTxIndex(b.Index)
+	if len(b.Transactions) < firstUserTx {
+		return fmt.Errorf("block #%d is missing the tx[1] treasury coinbase", b.Index)
+	}
+
+	// 1. First pass: Sum user fees and validate regular transactions (idx >= firstUserTx)
 	var totalFees int64 = 0
-	for idx := 1; idx < len(b.Transactions); idx++ {
+	for idx := firstUserTx; idx < len(b.Transactions); idx++ {
 		tx := b.Transactions[idx]
 
 		// Consensus Rule: Only tx[0] is permitted to have Sender == "SYSTEM"
@@ -347,7 +354,11 @@ func (sm *StateManager) VerifyAndApplyBlock(b *Block, allowedBlockReward int64, 
 	if allowedBlockReward < 0 || allowedBlockReward > math.MaxInt64-totalFees {
 		return fmt.Errorf("block #%d coinbase reward arithmetic overflow", b.Index)
 	}
-	maxAllowedCoinbase := allowedBlockReward + totalFees
+	var treasuryShare int64
+	if firstUserTx == 2 {
+		treasuryShare = TreasuryShare(allowedBlockReward)
+	}
+	maxAllowedCoinbase := allowedBlockReward - treasuryShare + totalFees
 	if coinbaseTx.Amount > maxAllowedCoinbase {
 		return fmt.Errorf("block #%d coinbase reward %d exceeds maximum allowed %d (reward %d + fees %d)",
 			b.Index, coinbaseTx.Amount, maxAllowedCoinbase, allowedBlockReward, totalFees)
@@ -378,6 +389,28 @@ func (sm *StateManager) VerifyAndApplyBlock(b *Block, allowedBlockReward int64, 
 	}
 	minerAcc = minerAcc.PruneMatured(b.Index, maturity)
 	deltaAccounts[minerHex] = minerAcc
+
+	// 3. Treasury coinbase (tx[1]) while the split is active: exact share, immature like tx[0].
+	if firstUserTx == 2 {
+		treasuryTx := b.Transactions[1]
+		if err := validateTreasuryCoinbase(&treasuryTx, b.Index, allowedBlockReward, sm.validAddress); err != nil {
+			return err
+		}
+		treasuryHex, err := sm.addressHex(treasuryTx.Recipient)
+		if err != nil {
+			return fmt.Errorf("block #%d invalid treasury coinbase recipient: %v", b.Index, err)
+		}
+		treasuryAcc := getAccount(treasuryHex)
+		if treasuryAcc.Balance > MaxSupply-treasuryTx.Amount {
+			return fmt.Errorf("block #%d treasury balance exceeds MaxSupply", b.Index)
+		}
+		treasuryAcc.Balance += treasuryTx.Amount
+		if maturity > 0 && treasuryTx.Amount > 0 {
+			treasuryAcc.Immature = append(treasuryAcc.Immature, ImmatureReward{Amount: treasuryTx.Amount, Height: b.Index})
+		}
+		treasuryAcc = treasuryAcc.PruneMatured(b.Index, maturity)
+		deltaAccounts[treasuryHex] = treasuryAcc
+	}
 
 	// Commit state updates atomically into authoritative ledger
 	for addrHex, updatedAcc := range deltaAccounts {

@@ -356,15 +356,25 @@ func BlockMintedSubsidy(b *Block, maxAllowedReward int64) int64 {
 	if b == nil || len(b.Transactions) == 0 {
 		return 0
 	}
+	// A validated block in the treasury split window carries tx[1]; it is newly minted subsidy
+	// too, and fees are only paid by the user transactions after it.
+	userStart := 1
+	var treasuryMinted int64
+	if len(b.Transactions) > 1 && isTreasuryCoinbaseShape(&b.Transactions[1]) {
+		userStart = 2
+		treasuryMinted = b.Transactions[1].Amount
+	}
 	var fees int64 = 0
-	for _, tx := range b.Transactions[1:] {
+	for _, tx := range b.Transactions[userStart:] {
 		fees += tx.Fee
 	}
-	coinbaseAmount := b.Transactions[0].Amount
-	if coinbaseAmount <= fees {
+	minted := treasuryMinted
+	if coinbaseAmount := b.Transactions[0].Amount; coinbaseAmount > fees {
+		minted += coinbaseAmount - fees
+	}
+	if minted <= 0 {
 		return 0
 	}
-	minted := coinbaseAmount - fees
 	if maxAllowedReward >= 0 && minted > maxAllowedReward {
 		return maxAllowedReward
 	}
@@ -946,19 +956,31 @@ func (bc *Blockchain) MineBlockContext(ctx context.Context, minerAddress string,
 	if IsBlockBinarySizeActive(prevBlock.Index + 1) {
 		maxCandidateBytes = MaxBlockSize
 	}
-	validTxsToMine, totalFees := bc.SelectCandidateTransactionsLocked(MaxBlockTransactions-1, maxCandidateBytes)
+	height := prevBlock.Index + 1
+	coinbaseTxs := 1
+	var treasuryShare int64
+	if IsTreasurySplitActive(height) {
+		coinbaseTxs = 2
+		treasuryShare = TreasuryShare(currentBlockReward)
+		maxCandidateBytes -= 128 // framed tx[1] treasury coinbase
+	}
+	validTxsToMine, totalFees := bc.SelectCandidateTransactionsLocked(MaxBlockTransactions-coinbaseTxs, maxCandidateBytes)
 
 	rewardTx := Transaction{
 		Sender:    "SYSTEM",
 		SenderPub: "",
 		Recipient: minerAddress,
-		Amount:    currentBlockReward + totalFees,
+		Amount:    currentBlockReward - treasuryShare + totalFees,
 		Fee:       0,
-		Nonce:     int64(prevBlock.Index + 1), // [C-26] Coinbase nonce equals block height
+		Nonce:     int64(height), // [C-26] Coinbase nonce equals block height
 		Signature: "REWARD_SIG",
 	}
 
-	txsToMine := append([]Transaction{rewardTx}, validTxsToMine...)
+	txsToMine := []Transaction{rewardTx}
+	if coinbaseTxs == 2 {
+		txsToMine = append(txsToMine, NewTreasuryCoinbase(height, currentBlockReward))
+	}
+	txsToMine = append(txsToMine, validTxsToMine...)
 	newBlock := *NewBlock(txsToMine, prevBlock.Hash, prevBlock.Index+1, minerAddress, target)
 	newBlock.Timestamp = now
 	// Randomize starting nonce (32-bit safe integer) so concurrent mining workers explore non-overlapping partitions
