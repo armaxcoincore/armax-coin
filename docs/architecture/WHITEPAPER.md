@@ -1,6 +1,6 @@
 # Armaxcoin (ARMX) Technical Whitepaper
 
-**Version:** 1.0.13 (Pre-Release Preparation — Public Testnet)
+**Version:** 1.0.13 (Active Testnet Release)
 **Ticker:** `ARMX` (mainnet; testnet GUI and explorer display `tARMX`)
 **Network Profiles:** `ARMX-TESTNET-1` (active default) and `ARMX-MAINNET-1` (locked; not launched)
 **Consensus:** Proof-of-Work (PoW) with Armax-ASERT-AW (`aserti3-2d`, `#13,335+`) & historical LWMA-1 ($N=60$)
@@ -45,7 +45,7 @@ ARMX combines a 126,000,000 supply cap, a roughly four-year halving schedule, an
 | **P2P Synchronization** | Chunked Range & Chainwork Sync | Range-based block streaming (`GET_BLOCK_RANGE`) with cumulative chainwork reorg |
 | **P2P Address Book** | 1,000 Addrs (`tried` & `new`) | Separate address book from active connections (MaxPeers=50), dead peer eviction after 3 failures |
 | **P2P Eclipse Defense** | Subnet Connection Limiter | Maximum 3 concurrent connections per IPv4 `/24` (or IPv6 `/48`) subnet (`disable_subnet_limit` available) |
-| **P2P Flood Defense** | Seen-Filter Hash Cache & Orphan Pools | LRU deduplication cache; bounded 100 orphan blocks (max 10/peer) & 500 orphan txs pool |
+| **P2P Flood Defense** | Seen-Filter Hash Cache & Orphan Pools | LRU deduplication cache; bounded 100 orphan blocks (max 10/peer) & 500 orphan txs pool (max 25/peer) |
 | **P2P Transport Encryption** | TLS 1.3 with TOFU pinning | Traffic is encrypted with TLS 1.3 using a persistent, self-signed ECDSA P-256 node identity; TOFU pins the remote certificate public-key fingerprint after first contact. The initial contact remains vulnerable to an active man-in-the-middle unless fingerprints are distributed out-of-band |
 | **Storage Engine** | bbolt Key-Value ACID Store (schema v3) | Persistence with undo log (1,440-block retention), snapshots every 1,000 blocks, and recovery support |
 | **Network Profiles** | Mainnet & Testnet Profiles | Mainnet (`ARMX-MAINNET-1`: P2P 19334, RPC 19332) \| Testnet (`ARMX-TESTNET-1`: P2P 19335, RPC 19333) |
@@ -210,7 +210,7 @@ To prevent an attacker from saturating all node connection slots through rented 
 - The subnet limiter raises the cost of some connection-concentration strategies but does not prevent eclipse attacks.
 
 ### 6.2 Packet Size & Socket Deadlines
-- Ordinary inbound newline-delimited P2P messages are limited to 4 MiB. The block-range synchronization reader has a separate 5 MiB limit; the consensus block-size limit is 2,000,000 bytes.
+- Inbound newline-delimited P2P frames are bounded by `MaxIncomingPacketSize = 8 MiB` (with frames `> 1 MiB` governed by a `32 MiB` aggregate large-payload lease budget), and outbound synchronization session responses are bounded by `MaxSessionRespBytes = 16 MiB` (`MaxSyncBatchBytes = 8 MiB`); the consensus block-size limit is 2,000,000 binary bytes (`TxBinaryV1`).
 - Sockets enforce 20-second read/write deadlines, mitigating Slowloris resource exhaustion.
 
 ### 6.3 RPC Authentication & Origin Hardening

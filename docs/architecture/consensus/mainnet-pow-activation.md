@@ -14,7 +14,7 @@ The staging profile preserves the immutable Mainnet SHA-256d genesis block (`#0`
 | Genesis, `#0` | SHA-256d digest and fixed nonce (`12`) / hash (`0ffbf057...`) | Fixed Difficulty 1 genesis target (`GenesisTargetHex`); ASERT & `TxBinaryV1` anchor | `Checkpoints[0] = GenesisHash` |
 | Blocks `#1+` (PoW) | ArmaxHash v2 Stream-Fast (legacy Argon2id v1 skipped: `-1`) | Bootstrap target Difficulty 5 (`ArmaxHashPowLimitHex`: `00000fff...`) | `ArmaxHashV2ActivationHeight: 1`, `ArmaxHashActivationHeight: -1` |
 | Blocks `#1+` (DAA) | — | Armax-ASERT-AW (`aserti3-2d`, $\tau = 3600\text{s}$, 4h Surge Cap `14400s`) anchored to Genesis `#0` at `ArmaxHashPowLimitHex`; TEDR disabled | `ASERTActivationHeight: 0`, `AntiStallActivationHeight: -1` |
-| Blocks `#1+` (Time / Size) | — | C1/C2 MTP-55 non-decreasing timestamps, C6 10-minute (`+600s`) future limit, and `TxBinaryV1` (`BinarySize()`) active from Block `#1` (`TxBinaryV1` `#0+`) | `TimestampRulesActivationHeight: 0`, `FutureTimestampLimitActivationHeight: 0`, `BlockBinarySizeActivationHeight: 0` |
+| Blocks `#1+` (Time / Size) | — | C1/C2 MTP-55 non-decreasing timestamps, C6 10-minute (`+600s`) future limit, and `TxBinaryV1` (`BinarySize()`) active from Block `#1` (`TxBinaryV1` `#0+`) | `TimestampRulesActivationHeight: 0`, `FutureTimestampLimitActivationHeight: 0`, `BlockBinarySizeActivationHeight: 0`, `MempoolBinaryFeeActivationHeight: 0` |
 
 ## Behavior Under Current Staging Profile
 

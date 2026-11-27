@@ -10,7 +10,7 @@ To prevent conflation between speculative design iterations and production-ready
 
 ### Tier 1: Active Software Implementation
 - **Scope:** The Go codebase actively running on full nodes, miners, desktop GUI v2 (`armgui`), and CLI tools in this repository.
-- **Source Version Metadata:** `v1.0.13` (Pre-Release Preparation — Public Testnet Release, `core.Version = "1.0.13"` on `release/v1.0.13`).
+- **Source Version Metadata:** `v1.0.13` (Official Public Testnet Release, `core.Version = "1.0.13"`).
 - **Core Principle:** Safety, reliability, sync-gated mining (`HTTP 503` / GUI `"Waiting for Sync"`), zero-alloc multi-thread CPU execution (`V2JobHasher`, padded slots), clean shutdown & deterministic job cancellation, post-quantum cryptography, consensus fork coordination, pure-Go desktop execution, and storage efficiency.
 
 ### Tier 2: Existing Testnet Compatibility Baseline
@@ -26,7 +26,7 @@ To prevent conflation between speculative design iterations and production-ready
 - **Status:** **Immutable.** Any change to these rules forks or partitions running Testnet nodes and is strictly prohibited without explicit network coordination.
 
 ### Tier 3: Future Mainnet Architecture Work
-- **Scope:** Locked `ARMX-MAINNET-1` profile (`core/network.go`, `core.MainnetLaunched = false`) holding a **provisional pre-launch staging configuration** (`ArmaxHashV2ActivationHeight = 1` over immutable SHA-256d Genesis `#0`, `ASERTActivationHeight = 0` anchored to `ArmaxHashPowLimitHex` Difficulty 5, `TimestampRulesActivationHeight = 0`, `FutureTimestampLimitActivationHeight = 0`, `BlockBinarySizeActivationHeight = 0`, `AntiStallActivationHeight = -1`), alongside dedicated network ports (Mainnet RPC: 19332, P2P: 19334, Stratum: 19338).
+- **Scope:** Locked `ARMX-MAINNET-1` profile (`core/network.go`, `core.MainnetLaunched = false`) holding a **provisional pre-launch staging configuration** (`ArmaxHashV2ActivationHeight = 1` over immutable SHA-256d Genesis `#0`, `ASERTActivationHeight = 0` anchored to `ArmaxHashPowLimitHex` Difficulty 5, `TimestampRulesActivationHeight = 0`, `FutureTimestampLimitActivationHeight = 0`, `BlockBinarySizeActivationHeight = 0`, `MempoolBinaryFeeActivationHeight = 0`, `AntiStallActivationHeight = -1`), alongside dedicated network ports (Mainnet RPC: 19332, P2P: 19334, Stratum: 19338).
 - **Status:** **Locked & Provisional (Not Finalized by `v1.0.13`).** Mainnet remains strictly locked in source (`core.MainnetLaunched = false`) pending `docs/MAINNET_READINESS.md` gates; all staged Mainnet parameters remain provisional and subject to revision prior to official Mainnet launch freeze. Local Mainnet testing requires `-local-mainnet` in isolated environments with distinct data directories and ports.
 
 ### Tier 4: Archived Historical Plans & Bridge Designs

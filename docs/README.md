@@ -27,7 +27,7 @@ This documentation directory contains official user guides, operator manuals, sp
 
 ## 4. Release History
 
-- [Release Notes Overview (v1.0.13)](releases/RELEASE_NOTES.md): Top-level summary of the upcoming Testnet release, P2P DoS & slot isolation hardening, consensus/storage integrity, wallet/GUI/miner security, and Go `1.27.4`.
+- [Release Notes Overview (v1.0.13)](releases/RELEASE_NOTES.md): Top-level summary of the active Testnet release, P2P DoS & slot isolation hardening, consensus/storage integrity, wallet/GUI/miner security, and Go `1.27.4`.
 - [v1.0.13 Release Notes](releases/v1.0.13.md): P2P DoS & slot hardening, pre-snapshot storage verification, `Option 1A` / `Option 2A-i` rolling compatibility, wallet/GUI/miner security, and Track 6 adversarial & 375-tx benchmarks.
 - [v1.0.12 Release Notes](releases/v1.0.12.md): Desktop Wallet GUI v2 (`armgui` `"Waiting for Sync"` & System Tray), Node Sync Gate (`HTTP 503`), integrated multi-thread CPU optimization (`armaxhash.V2JobHasher`, padded worker slots), Stratum TLS, additive Node RPC, and Go `1.27.4`.
 - [v1.0.11 Release Notes](releases/v1.0.11.md): Unified Block #20,000 Activation (`C6` + `TxBinaryV1` Block Size Accounting), Adaptive C2/C6 Miner Margin, and Bounded ASERT Drift Cache.

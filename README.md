@@ -1,7 +1,7 @@
 # Armaxcoin (`armax-coin`)
 
 **Canonical Repository:** [github.com/armaxcoincore/armax-coin](https://github.com/armaxcoincore/armax-coin)  
-**Current Release:** `v1.0.13` (Pre-Release Prep — P2P DoS & Slot Hardening, Consensus/Storage Integrity, Wallet/GUI/Miner Security, Go `1.27.4`; Rolling Compatible with `v1.0.10`–`v1.0.12`)
+**Current Release:** `v1.0.13` (P2P DoS & Slot Hardening, Sync Gate & Reorg Safety, Consensus/Storage Integrity, Wallet/GUI Privacy & Security, Go `1.27.4`; Rolling Compatible with `v1.0.10`–`v1.0.12`)
 **Go Module:** `github.com/armaxcoincore/armax-coin`
 
 Armaxcoin is an open-source, experimental Layer-1 Proof-of-Work (PoW) cryptocurrency engineered for post-quantum transaction security (NIST FIPS 204, ML-DSA-65), accessibility, and high performance across commodity personal computers and ARM-based devices (Armbian, Raspberry Pi 4/5, Orange Pi).
@@ -86,7 +86,7 @@ Pre-compiled binaries and signatures are published on [GitHub Releases](https://
 curl -LO https://github.com/armaxcoincore/armax-coin/releases/download/v1.0.13/armax-v1.0.13-linux-amd64.tar.gz
 curl -LO https://github.com/armaxcoincore/armax-coin/releases/download/v1.0.13/SHA256SUMS
 curl -LO https://github.com/armaxcoincore/armax-coin/releases/download/v1.0.13/SHA256SUMS.asc
-curl -LO https://raw.githubusercontent.com/armaxcoincore/armax-coin/main/ARMAX-PGP-KEY.asc
+curl -LO https://github.com/armaxcoincore/armax-coin/releases/download/v1.0.13/ARMAX-PGP-KEY.asc
 
 # 1. Import official release key & verify fingerprint (C857E67F3FC63BE35125C3D32ACE863ED4BF1460):
 gpg --import ARMAX-PGP-KEY.asc

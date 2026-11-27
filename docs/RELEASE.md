@@ -59,9 +59,9 @@ Get-Content .\SHA256SUMS | Select-String "armax-v1.0.13-windows-amd64.zip"
 
 ## 5. Official Release Status
 
-- **Target Release (`v1.0.13` — 2026-11-27):** **Pre-Release Preparation (Public Testnet Release)**
+- **Current Release (`v1.0.13` — 2026-11-27):** **Active Public Testnet Release**
   - **Release Notes:** [`docs/releases/v1.0.13.md`](releases/v1.0.13.md)
-  - **Status:** P2P DoS & slot isolation hardening (`38/12`, `8 MiB`/`32 MiB` budgets, strict `SeedHost` pins), pre-snapshot block & per-account snapshot verification, ML-DSA-65 zeroization, `Option 1A` / `Option 2A-i` rolling Testnet compatibility, wallet/GUI/miner security, GUI peer IP privacy redaction & PoW/DAA display separation, reproducible `build.sh` flags, `go.mod` dependency pruning, and 8-scenario adversarial + `375`-tx benchmark verification
+  - **Status:** P2P DoS & slot isolation hardening (`38/12`, `8 MiB`/`32 MiB` budgets, strict `SeedHost` pins), per-peer expiring sync gate height claims & serialized `ResolveFork`, pre-snapshot block & per-account snapshot verification, ML-DSA-65 zeroization + NIST ACVP/Wycheproof/protocol golden vectors, `Option 1A` / `Option 2A-i` rolling Testnet compatibility, wallet/GUI/miner security, GUI peer IP privacy redaction & PoW/DAA display separation, reproducible `build.sh` flags, `go.mod` dependency pruning, SHA-pinned GitHub Actions & `golang.org/x` updates, and 8-scenario adversarial + `375`-tx benchmark verification
   - **Target Architectures:**
     - `armax-v1.0.13-linux-amd64.tar.gz` (Linux 64-bit x86; includes `armgui` Web GUI)
     - `armax-v1.0.13-linux-arm64.tar.gz` (Linux 64-bit ARM / Raspberry Pi / SBC; includes `armgui` Web GUI)
@@ -148,7 +148,7 @@ This checklist defines the formal verification gates required before tagging, pa
 
 ### 6.1 Codebase & Toolchain Verification
 - [x] **Go Toolchain:** Verified building with Go 1.27.4+ (`go version`).
-- [x] **Deterministic Formatting:** `gofmt -l .` reports zero unformatted files.
+- [ ] **Deterministic Formatting:** `gofmt -l .` reports zero unformatted files *(4 whitespace-only constant/comment files deferred to `v1.0.14` to keep the release merge stack conflict-free)*.
 - [x] **Go Vet Analysis:** `go vet ./...` and `go vet -tags testhooks ./...` pass with 0 errors.
 - [x] **Static Analysis:** `staticcheck -tags testhooks ./...` passes repository-wide with 0 diagnostics.
 - [x] **Vulnerability Audit:** `govulncheck ./...` passes with 0 known vulnerabilities affecting code.
@@ -165,7 +165,7 @@ This checklist defines the formal verification gates required before tagging, pa
 - [x] **Linux arm64:** `GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build .` compiles cleanly.
 - [x] **Windows amd64:** `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build .` compiles cleanly.
 - [x] **macOS arm64:** `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build .` compiles cleanly.
-- [x] **Windows GUI Asset:** Verified `gui/rsrc_windows_amd64.syso` embeds updated `1.0.13.0` manifest and icon on `release/v1.0.13` without compilation warning.
+- [x] **Windows GUI Asset:** Verified `gui/rsrc_windows_amd64.syso` embeds updated `1.0.13.0` manifest and icon without compilation warning.
 - [x] **Release Packaging:** Verified `build-all.ps1` / `build-release.ps1` or `.github/workflows/release.yml` produces stripped binaries with SHA256 checksums.
 
 ### 6.4 Documentation & Public Information Verification

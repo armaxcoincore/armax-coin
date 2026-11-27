@@ -75,7 +75,7 @@ The Armaxcoin Public Testnet ([tt]ARMX-TESTNET-1[/tt]) is an open, decentralized
 [*] [b]Initial Block Reward:[/b] 60.00000000 tARMX (6,000,000,000 Armoids)
 [*] [b]Halving Interval:[/b] Every 1,050,000 blocks (~4.0 years on 120s cadence)
 [*] [b]Maximum Hard Cap:[/b] 126,000,000 tARMX (12,600,000,000,000,000 Armoids, 8 decimal places)
-[*] [b]Mainnet Tokenomics Status:[/b] Mainnet has not launched. Verifiable consensus parameters in source are: 126,000,000 ARMX maximum supply, 60 ARMX initial block reward, 1,050,000-block halving interval, and 120-second target block time. Planned developer early-mining details are disclosed in the repository README (section: Consensus & Tokenomics Parameters); full details will be announced in a separate thread.
+[*] [b]Mainnet Tokenomics Status:[/b] Mainnet has not launched. Verifiable consensus parameters in source are: 126,000,000 ARMX maximum supply, 60 ARMX initial block reward, 1,050,000-block halving interval, and 120-second target block time. Planned developer early-mining details are disclosed in the repository README (section: Core Network & Consensus Parameters); full details will be announced in a separate thread.
 [*] [b]Genesis Block Allocation:[/b] 60 tARMX burned to unspendable zero address ([tt]armx1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqplwcdd[/tt])
 [*] [b]Genesis Block Hash:[/b] [tt]0000000dc84202e63a340a2439625fbf9cea5cb7b84119f93d52cff39f63a68b[/tt]
 [*] [b]Genesis Merkle Root:[/b] [tt]808a4007681dd123133bfe106b101d251ff0d2d023f600384394673bfc03768d[/tt]
@@ -114,7 +114,7 @@ Official pre-compiled release packages and archives are accompanied by cryptogra
 [list]
 [*] [b]Checksum Manifest:[/b] [tt]SHA256SUMS[/tt]
 [*] [b]Detached Signature File:[/b] [tt]SHA256SUMS.asc[/tt]
-[*] [b]Release Signing Public Key:[/b] [tt]ARMAX-PGP-KEY.asc[/tt] (available in release assets and repository root)
+[*] [b]Release Signing Public Key:[/b] [tt]ARMAX-PGP-KEY.asc[/tt] (available in release assets and [tt]scripts/certs/ARMAX-PGP-KEY.asc[/tt])
 [*] [b]Official Release Key Fingerprint:[/b]
 [code]
 C857 E67F 3FC6 3BE3 5125  C3D3 2ACE 863E D4BF 1460
