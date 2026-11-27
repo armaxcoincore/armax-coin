@@ -4,13 +4,13 @@
 # Armaxcoin Release Verification & Dry-Run Test Suite (Linux / macOS / ARM64)
 # ==============================================================================
 # Usage:
-#   ./scripts/verify-release.sh [BIN_DIR] [EXPECTED_VERSION]   (default: v1.0.12)
+#   ./scripts/verify-release.sh [BIN_DIR] [EXPECTED_VERSION]   (default: v1.0.13)
 # ==============================================================================
 
 set -euo pipefail
 
 BIN_DIR="${1:-.}"
-EXPECTED_VERSION="${2:-v1.0.12}"
+EXPECTED_VERSION="${2:-v1.0.13}"
 echo "=================================================="
 echo " ARMAXCOIN - RELEASE VERIFICATION & DRY-RUN"
 echo "=================================================="
