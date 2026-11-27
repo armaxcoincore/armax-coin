@@ -3,7 +3,7 @@
 **Status: PROVISIONAL PRE-LAUNCH STAGING PROFILE (`core.MainnetLaunched = false`).** Mainnet remains strictly locked: invoking `-network mainnet` fails closed (`"Mainnet has not been launched; please use -network testnet"`) until all security, open independent review, and operational gates in [`../../MAINNET_READINESS.md`](../../MAINNET_READINESS.md) are completed and formally frozen.
 
 > [!IMPORTANT]
-> The parameter values documented below reflect the **current provisional staging profile** in `MainnetProfile` for isolated local dry-run testing (`-local-mainnet`) and code readiness verification. **`v1.0.12` is a Public Testnet (`ARMX-TESTNET-1`) software release and does NOT constitute a finalized or binding Mainnet launch specification.** All Mainnet consensus, PoW, difficulty, and launch parameters remain subject to revision prior to official Mainnet launch freeze.
+> The parameter values documented below reflect the **current provisional staging profile** in `MainnetProfile` for isolated local dry-run testing (`-local-mainnet`) and code readiness verification. **`v1.0.13` is a Public Testnet (`ARMX-TESTNET-1`) software release and does NOT constitute a finalized or binding Mainnet launch specification.** All Mainnet consensus, PoW, difficulty, and launch parameters remain subject to revision prior to official Mainnet launch freeze.
 
 ## Current Provisional Staging Configuration (`ARMX-MAINNET-1`)
 
@@ -14,7 +14,7 @@ The staging profile preserves the immutable Mainnet SHA-256d genesis block (`#0`
 | Genesis, `#0` | SHA-256d digest and fixed nonce (`12`) / hash (`0ffbf057...`) | Fixed Difficulty 1 genesis target (`GenesisTargetHex`); ASERT & `TxBinaryV1` anchor | `Checkpoints[0] = GenesisHash` |
 | Blocks `#1+` (PoW) | ArmaxHash v2 Stream-Fast (legacy Argon2id v1 skipped: `-1`) | Bootstrap target Difficulty 5 (`ArmaxHashPowLimitHex`: `00000fff...`) | `ArmaxHashV2ActivationHeight: 1`, `ArmaxHashActivationHeight: -1` |
 | Blocks `#1+` (DAA) | — | Armax-ASERT-AW (`aserti3-2d`, $\tau = 3600\text{s}$, 4h Surge Cap `14400s`) anchored to Genesis `#0` at `ArmaxHashPowLimitHex`; TEDR disabled | `ASERTActivationHeight: 0`, `AntiStallActivationHeight: -1` |
-| Blocks `#1+` (Time / Size) | — | C1/C2 MTP-55 non-decreasing timestamps, C6 10-minute (`+600s`) future limit, and `TxBinaryV1` (`BinarySize()`) active from Block `#1` (`TxBinaryV1` `#0+`) | `TimestampRulesActivationHeight: 0`, `FutureTimestampLimitActivationHeight: 0`, `BlockBinarySizeActivationHeight: 0` |
+| Blocks `#1+` (Time / Size) | — | C1/C2 MTP-55 non-decreasing timestamps, C6 10-minute (`+600s`) future limit, and `TxBinaryV1` (`BinarySize()`) active from Block `#1` (`TxBinaryV1` `#0+`) | `TimestampRulesActivationHeight: 0`, `FutureTimestampLimitActivationHeight: 0`, `BlockBinarySizeActivationHeight: 0`, `MempoolBinaryFeeActivationHeight: 0` |
 
 ## Behavior Under Current Staging Profile
 

@@ -1,18 +1,19 @@
 [center]
 [size=24pt][b]ARMAXCOIN TESTNET (tARMX)[/b][/size]
 [size=14pt][b]Proof-of-Work Layer-1 Blockchain with Post-Quantum Signatures (NIST FIPS 204, ML-DSA-65)[/b][/size]
-[size=12pt][b]Experimental Public Open Testnet Release Announcement (v1.0.12)[/b][/size]
+[size=12pt][b]Experimental Public Open Testnet Release Announcement (v1.0.13)[/b][/size]
 [/center]
 
 [hr]
 
-[b]Release Highlights & Active Consensus Milestones (v1.0.12 / v1.0.11 / v1.0.10 / v1.0.9):[/b]
+[b]Release Highlights & Active Consensus Milestones (v1.0.13 / v1.0.12 / v1.0.11 / v1.0.10 / v1.0.9):[/b]
 [list]
-[*] [b]v1.0.12 Desktop Wallet GUI v2 ("Waiting for Sync"), Sync Gate, Multi-Thread CPU Optimization & Go 1.27.4:[/b] Delivers a standalone pure-Go Windows WebView2 window ([tt]armgui.exe[/tt]) with [b]Minimize-to-System-Tray[/b], Dark & Light [tt]armax_explorer[/tt] themes, 1-click embedded daemon auto-start, Multi-Wallet switcher, local [tt]bbolt[/tt] paged transaction cache, ML-DSA-65 fee estimator, [b]CPU Miner[/b] tab with [b]"Waiting for Sync"[/b] anti-ban protection, WSL [tt]~/.config/ArmaxCoin[/tt] fallback + browser interop, an [b]HTTP 503[/b] node pre-sync gate preventing unsynced public-node IP bans, deterministic [tt]POST /mine/stop[/tt] cancellation, integrated multi-thread CPU optimization ([tt]armaxhash.V2JobHasher[/tt] inline prefix cache, 64-byte padded worker slots, physical-core default), encrypted Stratum TLS ([tt]stratum+ssl://[/tt]), additive Node RPC telemetry, and Go [tt]1.27.4[/tt] security updates ([tt]GO-2026-6859[/tt]). 100% rolling-compatible with [tt]v1.0.11[/tt] (zero hard forks or activation-height changes).
+[*] [b]v1.0.13 P2P DoS & Slot Isolation, Consensus/Storage Integrity & Security Hardening:[/b] Enforces separate [tt]38[/tt] inbound / [tt]12[/tt] outbound P2P slot limits with non-seed LRU eviction, [tt]8 MiB[/tt] packet / [tt]32 MiB[/tt] large-frame lease budgets, strict per-[tt]SeedHost[/tt] TLS pin matching, fail-closed [tt]p2ptls.pem[/tt] & TLS 1.3 SPKI validation, unified 3-tier clock-skew parity, full pre-snapshot block & per-account snapshot verification, ML-DSA-65 key/seed zeroization, atomic [tt]0600[/tt] wallet/GUI/miner hardening, and reproducible build flags—while preserving [b]100% rolling compatibility[/b] with [tt]v1.0.10[/tt]–[tt]v1.0.12[/tt] on [tt]ARMX-TESTNET-1[/tt].
+[*] [b]v1.0.12 Desktop Wallet GUI v2 ("Waiting for Sync"), Sync Gate, Multi-Thread CPU Optimization & Go 1.27.4:[/b] Delivers a standalone pure-Go Windows WebView2 window ([tt]armgui.exe[/tt]) with [b]Minimize-to-System-Tray[/b], Dark & Light [tt]armax_explorer[/tt] themes, 1-click embedded daemon auto-start, Multi-Wallet switcher, local [tt]bbolt[/tt] paged transaction cache, ML-DSA-65 fee estimator, [b]CPU Miner[/b] tab with [b]"Waiting for Sync"[/b] anti-ban protection, WSL [tt]~/.config/ArmaxCoin[/tt] fallback + browser interop, an [b]HTTP 503[/b] node pre-sync gate preventing unsynced public-node IP bans, deterministic [tt]POST /mine/stop[/tt] cancellation, integrated multi-thread CPU optimization ([tt]armaxhash.V2JobHasher[/tt] inline prefix cache, 64-byte padded worker slots, physical-core default), encrypted Stratum TLS ([tt]stratum+ssl://[/tt]), additive Node RPC telemetry, and Go [tt]1.27.4[/tt] security updates ([tt]GO-2026-6859[/tt]).
 [*] [b]Block 20,000 Unified Activation (v1.0.11+ — Active):[/b] Enforces the C6 10-minute future block timestamp limit ([tt]FutureTimestampLimitActivationHeight = 20000[/tt] with adaptive 5s inherited-tip / 30s local-clock miner margins) and canonical binary block/transaction size accounting ([tt]BlockBinarySizeActivationHeight = 20000[/tt] on Testnet, [tt]0[/tt] on Mainnet), expanding 2 MB block capacity from 185 to [b]375 regular ML-DSA-65 user transactions[/b] (+1 coinbase = 376 total).
 [*] [b]Block 13,335 Activation (v1.0.10 — Armax-ASERT-AW DAA, Active):[/b] Activates the canonical pure integer [tt]aserti3-2d[/tt] difficulty adjustment algorithm ([tt]ASERTActivationHeight = 13335[/tt]), anchored to Block #13,334 with Anti-Poisoning fallback (DA-03), 4-hour surge cap ([tt]14400s[/tt]), TEDR Boost ([tt]7200s[/tt]), and bounded drift cache pruning ([tt]10,000 -> 2,048[/tt]).
 [*] [b]Block 13,293 Activation (v1.0.9 — Anti-Stall TEDR, Active):[/b] Activates Testnet Anti-Stall Emergency Difficulty Adjustment ([tt]AntiStallActivationHeight = 13293[/tt]) under Model 3 Synthetic Target Normalization.
-[*] [b]Operator & User Action:[/b] Full nodes, miners, and wallet users can upgrade cleanly from [b]v1.0.11[/b] to [b]v1.0.12[/b] while keeping system clocks NTP-synchronized ([tt]timedatectl set-ntp true[/tt] / [tt]w32tm /resync[/tt]).
+[*] [b]Operator & User Action:[/b] Full nodes, miners, and wallet users can upgrade cleanly from [b]v1.0.10–v1.0.12[/b] to [b]v1.0.13[/b] while keeping system clocks NTP-synchronized ([tt]timedatectl set-ntp true[/tt] / [tt]w32tm /resync[/tt]).
 [/list]
 
 [b]Official Links:[/b]
@@ -22,7 +23,8 @@
 [*] [b]Testnet Mining Pool:[/b] [url=https://pool.armax-coin.cloud]https://pool.armax-coin.cloud[/url]
 [*] [b]Source Code Repository:[/b] [url=https://github.com/armaxcoincore/armax-coin]https://github.com/armaxcoincore/armax-coin[/url]
 [*] [b]Releases & Assets:[/b] [url=https://github.com/armaxcoincore/armax-coin/releases]https://github.com/armaxcoincore/armax-coin/releases[/url]
-[*] [b]Git Tag Reference:[/b] [url=https://github.com/armaxcoincore/armax-coin/tree/v1.0.12]refs/tags/v1.0.12[/url]
+[*] [b]Git Tag Reference:[/b] [url=https://github.com/armaxcoincore/armax-coin/tree/v1.0.13]refs/tags/v1.0.13[/url]
+[*] [b]v1.0.13 Release Notes:[/b] [url=https://github.com/armaxcoincore/armax-coin/blob/main/docs/releases/v1.0.13.md]docs/releases/v1.0.13.md[/url]
 [*] [b]v1.0.12 Release Notes:[/b] [url=https://github.com/armaxcoincore/armax-coin/blob/main/docs/releases/v1.0.12.md]docs/releases/v1.0.12.md[/url]
 [*] [b]v1.0.11 Release Notes:[/b] [url=https://github.com/armaxcoincore/armax-coin/blob/main/docs/releases/v1.0.11.md]docs/releases/v1.0.11.md[/url]
 [*] [b]v1.0.10 Release Notes:[/b] [url=https://github.com/armaxcoincore/armax-coin/blob/main/docs/releases/v1.0.10.md]docs/releases/v1.0.10.md[/url]
@@ -73,7 +75,7 @@ The Armaxcoin Public Testnet ([tt]ARMX-TESTNET-1[/tt]) is an open, decentralized
 [*] [b]Initial Block Reward:[/b] 60.00000000 tARMX (6,000,000,000 Armoids)
 [*] [b]Halving Interval:[/b] Every 1,050,000 blocks (~4.0 years on 120s cadence)
 [*] [b]Maximum Hard Cap:[/b] 126,000,000 tARMX (12,600,000,000,000,000 Armoids, 8 decimal places)
-[*] [b]Mainnet Tokenomics Status:[/b] Mainnet has not launched. Verifiable consensus parameters in source are: 126,000,000 ARMX maximum supply, 60 ARMX initial block reward, 1,050,000-block halving interval, and 120-second target block time. Planned developer early-mining details are disclosed in the repository README (section: Consensus & Tokenomics Parameters); full details will be announced in a separate thread.
+[*] [b]Mainnet Tokenomics Status:[/b] Mainnet has not launched. Verifiable consensus parameters in source are: 126,000,000 ARMX maximum supply, 60 ARMX initial block reward, 1,050,000-block halving interval, and 120-second target block time. Planned developer early-mining details are disclosed in the repository README (section: Core Network & Consensus Parameters); full details will be announced in a separate thread.
 [*] [b]Genesis Block Allocation:[/b] 60 tARMX burned to unspendable zero address ([tt]armx1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqplwcdd[/tt])
 [*] [b]Genesis Block Hash:[/b] [tt]0000000dc84202e63a340a2439625fbf9cea5cb7b84119f93d52cff39f63a68b[/tt]
 [*] [b]Genesis Merkle Root:[/b] [tt]808a4007681dd123133bfe106b101d251ff0d2d023f600384394673bfc03768d[/tt]
@@ -112,7 +114,7 @@ Official pre-compiled release packages and archives are accompanied by cryptogra
 [list]
 [*] [b]Checksum Manifest:[/b] [tt]SHA256SUMS[/tt]
 [*] [b]Detached Signature File:[/b] [tt]SHA256SUMS.asc[/tt]
-[*] [b]Release Signing Public Key:[/b] [tt]ARMAX-PGP-KEY.asc[/tt] (available in release assets and repository root)
+[*] [b]Release Signing Public Key:[/b] [tt]ARMAX-PGP-KEY.asc[/tt] (available in release assets and [tt]scripts/certs/ARMAX-PGP-KEY.asc[/tt])
 [*] [b]Official Release Key Fingerprint:[/b]
 [code]
 C857 E67F 3FC6 3BE3 5125  C3D3 2ACE 863E D4BF 1460
@@ -132,10 +134,10 @@ sha256sum --check --ignore-missing SHA256SUMS
 [*] [b]Verification Commands (Windows PowerShell):[/b]
 [code]
 # Compute SHA-256 hash of archive
-Get-FileHash -Algorithm SHA256 .\armax-v1.0.12-windows-amd64.zip
+Get-FileHash -Algorithm SHA256 .\armax-v1.0.13-windows-amd64.zip
 
 # Match against published SHA256SUMS manifest
-Get-Content .\SHA256SUMS | Select-String "armax-v1.0.12-windows-amd64.zip"
+Get-Content .\SHA256SUMS | Select-String "armax-v1.0.13-windows-amd64.zip"
 [/code]
 [/list]
 

@@ -11,7 +11,7 @@ param(
     [Parameter(Position = 0)]
     [string]$BinDir = ".",
     [Parameter(Position = 1)]
-    [string]$ExpectedVersion = "v1.0.12"
+    [string]$ExpectedVersion = "v1.0.13"
 )
 
 $ErrorActionPreference = "Stop"

@@ -28,8 +28,9 @@ import (
 // the full descriptor, so a cosigner signature can never be replayed as a single-key spend or
 // as a spend from a different multisig account.
 //
-// Size bound (Founder decision 2026-11-27): N <= 4 and M <= 3, so every spend fits
-// MaxTxSize (20,000 bytes) in TxBinaryV1. 4-of-4 would need about 21.1 KB and is rejected.
+// Size bound: N <= 4 and M <= 3 keep the largest spend (3-of-4: a 7,810-byte descriptor plus a
+// 9,928-byte witness) within MaxTxSize (20,000 bytes) in TxBinaryV1. 4-of-4 would need about
+// 21.1 KB and is rejected.
 const (
 	// SigAlgMultisigMLDSA65 identifies an ML-DSA-65 M-of-N multisig spend.
 	SigAlgMultisigMLDSA65 byte = 0x02

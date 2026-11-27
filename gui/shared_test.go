@@ -917,8 +917,8 @@ func TestCPUMiner_StatusAndRemovedGPUEndpoint(t *testing.T) {
 }
 
 func TestArmGUIVersionString(t *testing.T) {
-	if core.Version != "1.0.12" {
-		t.Fatalf("expected core.Version 1.0.12, got %q", core.Version)
+	if core.Version != "1.0.13" {
+		t.Fatalf("expected core.Version 1.0.13, got %q", core.Version)
 	}
 	want := "armgui v" + core.Version
 	if got := armguiVersionString(); got != want {
