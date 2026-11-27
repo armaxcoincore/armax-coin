@@ -50,7 +50,8 @@ This plain-language summary explains how the Testnet migration program fits into
 - **Why snapshot reconciliation is required:** Pool coinbase rewards land in the pool wallet first and are then split among miners. Reconciling on-chain history with pool payout ledgers prevents double-counting and cleanly excludes developer test addresses.
 - **Core Decoupling Invariant (`Migration Snapshot ≠ Testnet Shutdown ≠ Mainnet Launch`):** Reaching the `5,000,000 tARMX` target only caps Phase 1 migration accumulation. It does **not** shut down `ARMX-TESTNET-1` (which continues indefinitely in Phase 3 for GPU/pool testing), nor does it trigger Mainnet launch (which is governed separately by independent security review gates in Phase 4).
 - **What is planned vs. what remains undecided (`TBA`):**
-  - *Planned direction:* Software readiness and stability testing run **first** on an isolated staging network (zero real Mainnet coins). Once ready, `ARMX-MAINNET-1` opens **directly to all public miners from Block `#1`** with **zero premine** and **zero pre-public private mining**. Under this preliminary `v1.3` plan, Mainnet consensus rules on **Blocks `#1..#108,000`** (`~150` days at `120s` target spacing) split each `60 ARMX` block subsidy into **`48 ARMX` (`80%`) + `100%` of fees to the miner** and **`12 ARMX` (`20%`) to the fixed protocol Treasury address** (`108,000 × 12 = 1,296,000 ARMX`), returning to the full **`60 ARMX` + fees** for miners from **Block `#108,001`** onward. Up to **`500,000 ARMX`** (`5,000,000 eligible tARMX` at `10:1`) is reserved for Testnet miner migration and fulfilled in **staged tranches** as Treasury coinbases mature (`100` confirmations) through Block `#108,000`.
+  - *Planned direction:* Software readiness and stability testing run **first** on an isolated staging network (zero real Mainnet coins). Once ready, `ARMX-MAINNET-1` opens **directly to all public miners from Block `#1`** with **zero premine** and **zero pre-public private mining**. Under this preliminary `v1.3` plan, Mainnet consensus rules on **Blocks `#1..#108,000`** (`~150` days at `120s` target spacing) split each `60 ARMX` block subsidy into **`48 ARMX` (`80%`) + `100%` of fees to the miner** and **`12 ARMX` (`20%`) to the fixed protocol Treasury address** (`108,000 × 12 = 1,296,000 ARMX`), returning to the full **`60 ARMX` + fees** for miners from **Block `#108,001`** onward. Up to **`500,000 ARMX`** (`5,000,000 eligible tARMX` at `10:1`) is reserved for Testnet miner migration and fulfilled in **staged tranches** as Treasury coinbases become spendable (consensus `CoinbaseMaturity = 100`) **and** reach the operational `>= 720`-confirmation finality threshold (`MaxReorganizationDepth`, `~24` hours) through Block `#108,000`.
+  - *Use a new Mainnet wallet:* Mainnet addresses use their own prefix (`ax1…`), distinct from Testnet (`armx1…`). Migration payouts go to a **new** Mainnet address that you bind to your Testnet mining address with a signed claim—never import a Testnet keystore into a Mainnet wallet.
   - *Still preliminary:* Everything—including final ratification of the `80% / 20%` Open-Launch Subsidy Split parameters, the candidate **`10 tARMX : 1 ARMX`** ratio, snapshot block height/date, and claim tranche schedules—remains **non-final (`TBA`)** until separate Founder approval. `tARMX` has **no current market price, liquidity, or guaranteed return**.
 
 ---
@@ -70,8 +71,8 @@ Except for the explicitly bounded Mainnet subsidy-split rule proposed in Stage 2
 - **Target Block Interval:** `120` seconds (`2` minutes).
 - **Halving Interval:** Every `1,050,000` blocks (~`4` years at target spacing).
 - **No Emission Outside Consensus:** Treasury balances can only originate from valid consensus block subsidies under Layer-1 rules—never through preminted off-rule coins or hardcoded supply inflation.
-- **Transparent Consensus Subsidy Split (Mainnet `#1..#108,000` Only; Not Yet Implemented in Source):** Under this proposed `80% / 20%` subsidy-split rule, the `12 ARMX/block` Treasury share applies strictly and deterministically to `ARMX-MAINNET-1` Blocks `#1..#108,000` via a dedicated consensus coinbase output (`tx[1]`, `CoinbaseMaturity = 100`) to a single pre-announced Treasury address; `100%` of user transaction fees remain with the block miner (`tx[0]`), `ARMX-TESTNET-1` remains `0%` split, and this rule must be implemented and independently reviewed before `core.MainnetLaunched` is enabled.
-- **Genesis & Profile Preservation:** Neither Mainnet genesis (`core/genesis.go`, `60 ARMX` burned to the canonical zero-payload address, `0 ARMX` to Treasury) nor historical Testnet (`ARMX-TESTNET-1`) genesis, blockchain history, Network IDs, databases, wallets, or consensus schedules are modified by this draft.
+- **Transparent Consensus Subsidy Split (Mainnet `#1..#108,000` Only; Not Yet Implemented in Source):** Under this proposed `80% / 20%` subsidy-split rule, the `12 ARMX/block` Treasury share applies strictly and deterministically to `ARMX-MAINNET-1` Blocks `#1..#108,000` via a dedicated consensus coinbase output (`tx[1]`, `CoinbaseMaturity = 100`) to a single pre-announced `M-of-N` multisig Treasury address; `100%` of user transaction fees remain with the block miner (`tx[0]`), `ARMX-TESTNET-1` remains `0%` split, and this rule must be implemented and independently reviewed before `core.MainnetLaunched` is enabled. The byte-level contract is specified in [`mainnet-treasury-subsidy-split.md`](../architecture/consensus/mainnet-treasury-subsidy-split.md).
+- **Genesis & Profile Preservation:** Historical Testnet (`ARMX-TESTNET-1`) genesis, blockchain history, Network IDs, address prefix (`armx1…`), databases, wallets, and consensus schedules are **not** modified. Mainnet genesis (`core/genesis.go`) keeps its economics (`60 ARMX` burned to the canonical zero-payload address, `0 ARMX` to Treasury); under the proposed per-network address prefix (Mainnet `ax`), that burn address is encoded as `ax1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqyum580`, which changes the (not yet launched) Mainnet genesis hash only.
 - **Mainnet Launch Lock Remains Active:** `core.MainnetLaunched = false` stays unchanged until independently authorized after satisfying [`docs/MAINNET_READINESS.md`](../MAINNET_READINESS.md).
 - **Custody Tooling Clarification:** Do not assume the Armaxcoin protocol already contains tested trustless time-locks or on-chain multisig covenants. Unless independently implemented and reviewed in source code, all vesting locks and custody controls described below are **proposed operational/policy mechanisms (`TBA`)**.
 
@@ -83,7 +84,7 @@ Except for the explicitly bounded Mainnet subsidy-split rule proposed in Stage 2
 
 Assuming the target block spacing and initial `60 ARMX` block subsidy hold across `108,000` Mainnet blocks (`#1..#108,000`, with no halving before `#1,050,000`):
 
-- **Genesis (`#0`):** `60 ARMX` burned to `armx1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqplwcdd` (`0 ARMX` to Treasury).
+- **Genesis (`#0`):** `60 ARMX` burned to the canonical zero-payload address (`0 ARMX` to Treasury): `ax1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqyum580` under the proposed Mainnet prefix (the Testnet equivalent remains `armx1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqplwcdd`).
 - **Split Window (`Blocks #1..#108,000`, `108,000` blocks):**
   - **Miner Share (`80%`):** `48 ARMX` (`4,800,000,000 Armoids`) + `100%` of transaction fees per block = **`5,184,000 ARMX`** (+ all fees) to public miners.
   - **Treasury Share (`20%`):** `12 ARMX` (`1,200,000,000 Armoids`, `0` fees) per block = **`1,296,000 ARMX`** exact (`108,000 × 12 = 1,296,000 ARMX`, zero fractional remainder block).
@@ -102,7 +103,7 @@ Block #108,001 onward:
 **Measurement & Accuracy Caveats:**
 1. **Block-Height Cutoff, Not Calendar Cutoff:** The consensus split ends strictly at **Block `#108,000`**, not after `150` calendar days. Under Proof-of-Work and `Armax-ASERT-AW`, actual wall-clock duration varies with network hashrate.
 2. **No Oversupply or Premine:** Every `ARMX` in Treasury comes from the standard `60 ARMX` block subsidy as public miners mine blocks `#1..#108,000`.
-3. **Opening Height Confirmation Required:** Before Mainnet launch freeze, exact split parameters (`TreasuryAddress`, `TreasurySplitEndHeight = 108000` on `MainnetProfile`, `-1` on Testnet/Soak/Regtest) must be verified in `core/network.go`, `core/state.go`, `core/blockchain.go`, `node/server.go`, and `miner/miner.go`.
+3. **Opening Height Confirmation Required:** Before Mainnet launch freeze, exact split parameters (`TreasuryAddress`, `TreasurySplitEndHeight = 108000` on `MainnetProfile`; a short local window on Regtest for end-to-end testing; `-1` = disabled on Testnet and Soak) must be verified in `core/network.go`, `core/state.go`, `core/blockchain.go`, `node/server.go`, and `miner/miner.go`. Because Mainnet has no chain yet, the rule applies from genesis and needs **no activation block or hard fork**; enabling it on `ARMX-TESTNET-1` would require a separately authorized, coordinated activation height.
 
 ### 2.2 Two-Stage Open-Launch Architecture & Transparency Safeguards
 
@@ -189,6 +190,14 @@ To prevent both pre-public private mining and premature Mainnet resets, this pre
 | `H` *(Hypothetical)* | `20` | `4,000 ARMX` | `4.0%` |
 | **Total (`8` Illustrative Slots)** | **`500` pts** | **`100,000 ARMX`** | **`100.0%`** |
 
+### 4.2a Conflict-of-Interest Safeguards (Solo-Maintainer Reality)
+
+The project currently has a single maintainer and no DAO or independent committee. Rather than inventing a nominal "independent committee" (governance theater), any Core Developer grant—including one to the Founder—must satisfy all of the following verifiable constraints:
+1. **Hard Ceiling:** Total Core Developer grants never exceed `100,000 ARMX`; unused ceiling stays in Treasury.
+2. **Public Evidence Window (`>= 14` days):** The proposed recipient list, contribution scores, and supporting public evidence (merged PRs, releases, reviews, security fixes) are published at least `14` days before any grant is fixed, so the community can check the evidence.
+3. **No Double-Dipping:** The same work cannot be rewarded from both the Core Developer pool and the Community Contributors pool, nor counted again under Testnet miner migration (developer-controlled mining is already `0 ARMX`, Section `6.2`).
+4. **Cliff and Vesting:** Every grant follows the `12`-month cliff and `24`-month vesting in Section `4.3`, disbursed under the multi-party custody controls in Section `10.2`.
+
 ### 4.3 Proposed Developer Vesting Schedule (`24` Months)
 
 Any separately approved Core Developer grant is proposed to follow a **two-year vesting timeline**:
@@ -219,6 +228,7 @@ Any separately approved Core Developer grant is proposed to follow a **two-year 
 ### Core Fairness Rules for Community Grants
 1. **No Participation-Trophy Splits:** Equal payouts must **never** be handed out merely for joining Telegram or following a GitHub account. Recognition must tie to verifiable, helpful contributions.
 2. **No Double-Counting:** The exact same work or contributor deliverables **must not** be compensated twice across both the `100,000 ARMX` Core Developer Team pool and the `200,000 ARMX` Community Contributors pool.
+3. **Factual Correction Window (`7–14` days):** Before the contributor list is finalized, a draft list is published for a `7–14` day correction window. Contributors may point out missed PRs, bug reports, or wrong/missing payout addresses with public evidence. This window corrects factual omissions only; it does not turn discretionary, non-contractual grants into enforceable claims.
 
 ### 5.1 Arithmetic Illustration Only *(Not Actual Reward Methodology)*
 
@@ -261,6 +271,8 @@ Any separately approved Core Developer grant is proposed to follow a **two-year 
    - **`Developer / Team Mining` (Excluded — `0 ARMX`):** Rewards tied to confirmed developer/internal test addresses (`Layer 1 Excluded`).
    - **`Excess Over Wallet Cap` (Not Counted — `0 ARMX`):** Only the surplus above `500,000 tARMX` on an eligible address is clipped; rewards within the `500,000 tARMX` cap remain intact.
 2. **Proportional (Pro-Rata) Oversubscription Policy:** If total verified eligible `tARMX` across all external miners exceeds **`5,000,000 tARMX`**, all eligible claims scale **proportionally (`5,000,000 / Total_Eligible`)** rather than using a first-come-first-served cutoff or silently changing the `10:1` conversion ratio.
+3. **Snapshot Closes Only at an Announced Block Height (`H_cutoff`):** Phase 1 never closes "when 5M is reached". It closes at a single block height `H_cutoff`, announced publicly at least **`2,160` blocks (`~3` days at `120s`)** in advance. Rewards from blocks `<= H_cutoff` count; rewards after it do not. If the eligible total at `H_cutoff` exceeds `5,000,000 tARMX`, rule `2` (pro-rata) applies automatically. Reaching or approaching `5,000,000 tARMX` may motivate announcing `H_cutoff`, but is never itself the cutoff.
+4. **Snapshot Finality:** The snapshot is computed only after the canonical Testnet tip satisfies `H_tip >= H_cutoff + 720` (`MaxReorganizationDepth`), so no reorganization can still change blocks at or below `H_cutoff`. Testnet `CoinbaseMaturity = 10` is a spendability rule and is **not** sufficient finality for the snapshot.
 
 ### 6.2 Preserved Eligibility & Reconciliation Rules (Dual-Lock Event-Based Model)
 
@@ -270,6 +282,8 @@ All `v1.2` Testnet migration safeguards remain strictly intact:
 3. **Layer 2 — Event-Based Transfer & Faucet Exclusion (`0 ARMX`):** Entitlement attaches solely to original canonical mining acquisition events (`Solo block rewards` and pool-ledger-reconciled `Pool payouts`). **Ordinary transfers (`1`-hop through `N`-hop) and Faucet distributions create `0 ARMX` entitlement** and never transfer mining entitlement between addresses.
 4. **No Pool Double-Counting:** Pool block subsidies sent to `armx1ujmgn00rrtqwqvrvmtj4q3qwen4jyv7d38qq7xg9rae0kvvql8hq6m64at` cannot be claimed by the pool operator; external miner claims are reconciled strictly against verified pool share/payout ledgers, and un-disbursed pool hot-wallet balances receive `0 ARMX`.
 5. **Unchanged On-Chain Testnet:** Exclusions govern off-chain Mainnet migration accounting only—they never freeze `tARMX` balances, alter consensus, or rewrite `ARMX-TESTNET-1` history.
+6. **Signed Periodic Pool Ledger Export:** Pool share/payout data is off-chain, so each participating pool operator publishes periodic ledger exports (at least weekly and a final export at `H_cutoff`) consisting of a canonical manifest, its `SHA-256` digest, and an `ML-DSA-65` signature from the pool operator key. A deterministic open-source verifier recomputes digests, checks signatures, and cross-checks every claimed payout against on-chain pool payout transactions. A pool that does not publish signed exports cannot back pool-payout claims beyond what is provable on-chain.
+7. **Claims Bind a New Mainnet Address:** Payouts are **not** sent to the Testnet address re-encoded for Mainnet. Each claimant signs a domain-separated claim message (`ARMX-MIGRATION-V1 || ARMX-MAINNET-1 || <new ax1… Mainnet address> || H_cutoff`) with the `ML-DSA-65` key of the eligible Testnet address. The final manifest records each `armx1… -> ax1…` pair; duplicate or conflicting claims for one Testnet address are rejected. This prevents Testnet keys—often handled loosely—from controlling Mainnet funds.
 
 > [!NOTE]
 > *Non-Transferability Example (`10:1` Candidate Ratio):* If `Wallet A` legitimately mines `100 tARMX` and sends `50 tARMX` (`Ordinary transfer`) to `Wallet B` (`0 tARMX` mined), `Wallet A` retains eligibility for **`10 ARMX`** while `Wallet B` has **`0 ARMX`** eligibility despite both holding `50 tARMX`.
@@ -318,7 +332,7 @@ A vital governance distinction must be established before any target is reached:
 
 ```mermaid
 flowchart LR
-    A["Phase 1: Accumulation<br/>(Target: 5M tARMX)"] -->|"Target Reached / Snapshot"| B["Phase 2: Reconciliation<br/>(Audit & 14-Day Dispute Window)"]
+    A["Phase 1: Accumulation<br/>(Capacity: 5M tARMX)"] -->|"Announced H_cutoff Reached"| B["Phase 2: Reconciliation<br/>(Audit & 14-Day Dispute Window)"]
     B --> C["Phase 3: Extended Testnet<br/>(Open Mining & GPU Testing)"]
     B --> D["Phase 4: Mainnet Readiness<br/>(Independent Security Audit)"]
     D -->|"All Gates Passed"| E["Phase 5: Mainnet Launch<br/>(Genesis & Claim Distribution)"]
@@ -335,7 +349,7 @@ flowchart LR
 ```mermaid
 stateDiagram-v2
     [*] --> Phase1_Accumulation: Testnet Live Mining
-    Phase1_Accumulation --> Phase2_Reconciliation: 5M Target Hit or Snapshot Block
+    Phase1_Accumulation --> Phase2_Reconciliation: Announced H_cutoff Reached (>= 2,160 Blocks Notice)
     Phase2_Reconciliation --> Phase3_ExtendedTestnet: Accumulation Window Closed
     Phase2_Reconciliation --> Phase4_Readiness: Final Claim Registry Certified
     state Phase3_ExtendedTestnet {
@@ -357,7 +371,8 @@ stateDiagram-v2
   - Explorer displays real-time progress bar, percentage (`11.02%` at Block `#22,990`), and remaining capacity.
   - Automated background ingestion of solo coinbase and stratum pool payout ledgers.
 - **Phase 2 — Migration Review & Reconciliation:**
-  - Accumulation stops at the designated snapshot block height. Mining after this height does not accrue Phase 1 migration rights.
+  - Accumulation stops at the pre-announced snapshot block height `H_cutoff` (announced `>= 2,160` blocks ahead). Mining after this height does not accrue Phase 1 migration rights.
+  - **Finality gate:** reconciliation starts only once the canonical Testnet tip reaches `H_tip >= H_cutoff + 720` (`MaxReorganizationDepth`); Testnet `CoinbaseMaturity = 10` is not used as finality.
   - Full cross-reconciliation of canonical blockchain transactions against pool server share/payout databases and developer exclusion registries.
   - **14-day public dispute window** allowing miners to audit provisional figures and submit cryptographic proofs for misclassified payouts.
   - Cryptographic certification of the final claim Merkle root or signed manifest.
@@ -370,7 +385,7 @@ stateDiagram-v2
   - Formal, signed launch authorization by the Project Founder.
 - **Phase 5 — Mainnet Launch & Staged Migration Settlement:**
   - Independent genesis event (`ARMX-MAINNET-1`) open to all public miners from Block `#1`.
-  - Validated Phase 2 migration claims (`<= 500,000 ARMX` maximum ceiling) are fulfilled in **staged tranches** as the `12 ARMX/block` Treasury coinbases accumulate and pass `CoinbaseMaturity = 100` confirmations, completing full settlement after Block `#108,000` matures.
+  - Validated Phase 2 migration claims (`<= 500,000 ARMX` maximum ceiling) are fulfilled in **staged tranches** to each claimant's bound `ax1…` Mainnet address as the `12 ARMX/block` Treasury coinbases accumulate. A Treasury coinbase is spendable after `CoinbaseMaturity = 100` (consensus), but is scheduled for disbursement only after **`>= 720` confirmations** (`MaxReorganizationDepth`, `~24` hours), completing full settlement after Block `#108,000` reaches that depth.
 
 ### 6.5 Pre-Snapshot Testnet Mining Transparency Dashboard & Richlist Specification
 
@@ -381,6 +396,7 @@ Prior to announcing any snapshot cutoff, publish in `armax_explorer` a dedicated
 ```text
 +----------------------------------------------------------------------------------------------------+
 |  TESTNET MINER MIGRATION                                                            [PRELIMINARY]  |
+|  [ PHASE 1 MIGRATION QUOTA ONLY — NOT MAINNET COUNTDOWN ]                                          |
 |  ARMX-TESTNET-1 · Migration capacity                                                               |
 |                                                                                                    |
 |  551,006.76 tARMX                                                                                  |
@@ -392,12 +408,26 @@ Prior to announcing any snapshot cutoff, publish in `armax_explorer` a dedicated
 |  Eligible rewards:                        Remaining capacity:                                      |
 |  551,006.76 tARMX provisional             4,448,993.24 tARMX                                       |
 |                                                                                                    |
-|  Current block:                           Estimated completion:                                    |
-|  #22,990                                  Calculating (Awaiting historical eligibility data)       |
+|  Current block:                           Est. Phase 1 Quota Cutoff:                               |
+|  #22,990                                  N/A — Block Height Cutoff (H_cutoff not announced)       |
 |                                                                                                    |
 |  * Illustrative mockup, not live Explorer data.                                                    |
 +----------------------------------------------------------------------------------------------------+
+
++----------------------------------------------------------------------------------------------------+
+|  PHASE 4 · MAINNET READINESS GATES                                               [SEPARATE TRACK]  |
+|  Independent of the migration quota above. Mainnet opens only when every gate passes.              |
+|                                                                                                    |
+|  [ ] Independent security review (0 open Critical/High)   [ ] Isolated staging soak                |
+|  [ ] Dual-coinbase & multisig custody reviewed            [ ] Cross-platform release verification  |
+|  [ ] Founder launch authorization                                                                  |
+|                                                                                                    |
+|  Mainnet launch date: TBA — not derived from migration progress.                                   |
++----------------------------------------------------------------------------------------------------+
 ```
+
+- The migration widget must never show a date or countdown that could be read as a Mainnet launch estimate; its only time-like field is the announced `H_cutoff` block height (or `N/A` until announced).
+- Phase 4 readiness status is always rendered as a **separate panel**, sourced from [`MAINNET_READINESS.md`](../MAINNET_READINESS.md) gates, never from migration progress.
 
 #### Empirical Derivation from Live Testnet Chain (Block `#22,990`)
 
@@ -440,7 +470,7 @@ We want to share an important clarification regarding the upcoming Testnet minin
 Here is what you need to know about our phased roadmap:
 
 1. **Target Purpose:** The 5,000,000 tARMX target is strictly a capacity ceiling for the *Initial Testnet Miner Migration Program*. It is an evaluation quota for recognizing early hardware contributors, not a technical trigger for launching the network.
-2. **Snapshot & Accumulation Freeze:** Once the 5M eligible threshold is verified (or the designated snapshot block is reached), the accumulation window for this specific migration program will close. We will conduct a transparent reconciliation audit with a community dispute window.
+2. **Snapshot & Accumulation Freeze:** The accumulation window closes only at a snapshot block height (`H_cutoff`) that we will announce at least 2,160 blocks (~3 days) in advance. If eligible rewards at that height exceed 5,000,000 tARMX, all claims scale pro-rata. We will then conduct a transparent reconciliation audit with a community dispute window.
 3. **Testnet Will Continue Running:** The public Testnet (`ARMX-TESTNET-1`) will **remain live and fully operational** after the snapshot. It will serve as an ongoing playground for GPU miner development, mining pool stress testing, P2P network benchmarks, and protocol experimentation.
 4. **Post-Snapshot Mining:** Mining rewards generated after the initial migration snapshot will remain testnet coins and will not automatically qualify for the initial migration program.
 5. **Mainnet Readiness:** Mainnet launch is governed strictly by rigorous security gates—including independent third-party code audits, multi-node staging stress tests, and zero unresolved critical findings. We will launch Mainnet when the protocol is provably secure, not simply because a mining counter reached a specific number.
@@ -464,7 +494,8 @@ We deeply appreciate every miner, node operator, and community member contributi
 | Risk Scenario | Impact Level | Likelihood | Root Cause | Mitigation Strategy |
 |---|:---:|:---:|---|---|
 | **Miner Backlash on Mainnet Timing** | High | High | Community conflating the 5M target with an immediate Mainnet launch commitment. | Publish Section 6.6 official announcement proactively **before** the 5M mark is approached; prominently feature `PRELIMINARY` and `Migration Snapshot ≠ Mainnet Launch` badges on the Explorer dashboard. |
-| **Whale / Sybil Splitting Attacks** | Medium | Medium | Miners attempting to split balances across multiple wallets to bypass per-wallet caps. | Cap is evaluated on **verified mining acquisition events** (coinbase & stratum pool ledgers), not post-transfer balances. Peer-to-peer transfers do not generate migration eligibility. |
+| **Whale / Sybil Splitting Attacks** | Medium | Medium | Miners attempting to split balances across multiple wallets to bypass per-wallet caps. | Cap is evaluated on **verified mining acquisition events** (coinbase & stratum pool ledgers), not post-transfer balances, so splitting **already-mined** balances by transfer gains nothing. **Honest limitation:** `500,000 tARMX` is a per-address cap, not a KYC per-person cap; a miner who points hashpower at several addresses **before** mining is not prevented by this rule. The `5,000,000 tARMX` program ceiling and pro-rata scaling bound the total impact. |
+| **Testnet Key Reuse on Mainnet** | High | Medium | Users importing loosely handled Testnet keystores into Mainnet wallets. | Distinct Mainnet address prefix (`ax1…` vs Testnet `armx1…`), wallet-side network checks that reject cross-network recipients and keystores before signing, and migration claims that bind a **new** Mainnet address (Section `6.2`, rule `7`). |
 | **Pool Payout Reconciliation Discrepancies** | Medium | Low | Stratum server logs differing from on-chain pool hot wallet distributions. | Institute a 14-day Phase 2 public dispute window with dual-source validation (blockchain blocks + pool stratum share receipts). |
 | **Premature Mainnet Launch Under Pressure** | Critical | Low | Rushing Mainnet deployment before completing security reviews to appease impatient miners. | Strict adherence to Phase 4 gates: zero deployment without independent third-party review sign-off and isolated staging soak verification. |
 | **Unbounded Moving Target Confusion** | High | Medium | Repeatedly altering the migration target without formal governance. | Enforce the Fixed Target Policy: 5,000,000 tARMX is an immutable ceiling for Phase 1. Any future phases require separate governance charters. |
@@ -472,10 +503,11 @@ We deeply appreciate every miner, node operator, and community member contributi
 ### 6.8 Snapshot, Transparency Dashboard & Claim Safeguards (`TBA` Until Formal Approval)
 
 - **Pre-Snapshot `Testnet Mining Transparency Dashboard` + Richlist (`armax_explorer`):** Prior to announcing any snapshot cutoff, publish a read-only dashboard and `Richlist & Mining Origin Inspector` displaying live network metrics, **separating `Blocks Found` from `Pool Worker Shares & Payouts`**, showing raw balances alongside verified mining origins (`Solo Coinbase`, `Verified Pool Payouts`, `Developer Excluded`, `Transfer / Faucet Only`), and tracking `Verified Eligible tARMX` vs. `Remaining Migration Capacity` (`5,000,000 tARMX`).
-- **Pre-Announced Snapshot Cutoff:** Exact cutoff block height and UTC timestamp announced openly before snapshot.
-- **Canonical Chain & Reorg Finality:** Only finalized canonical blocks past maturity/reorganization depth count; orphaned/reorged blocks are excluded.
+- **Pre-Announced Snapshot Cutoff:** Exact cutoff block height `H_cutoff` announced openly at least `2,160` blocks (`~3` days) before it is reached; the UTC estimate is informational only (Section `6.1`, rule `3`).
+- **Canonical Chain & Reorg Finality:** The snapshot is computed only when `H_tip >= H_cutoff + 720` (`MaxReorganizationDepth`); orphaned/reorged blocks are excluded. Testnet `CoinbaseMaturity = 10` and Mainnet `CoinbaseMaturity = 100` are spendability rules, not finality guarantees.
+- **Signed Pool Ledgers:** Pool payout claims are backed only by signed periodic pool ledger exports (`SHA-256` + `ML-DSA-65`) verified by a deterministic open-source verifier (Section `6.2`, rule `6`).
 - **Ownership Proof Without Secret Exposure:** Participants prove address control locally via a signed ML-DSA-65 challenge message (`armwallet` / `armgui`)—**never** share mnemonics, keystores, or passphrases.
-- **Objection, Escrow & Staged-Tranche Settlement:** Draft allocation registry opens for miner review so missing or mismatched solo/pool proofs can be checked before final distribution; disputed/pending items stay in reserve escrow until resolved or expired to Treasury surplus. Approved claims are disbursed in **staged tranches** aligned with matured (`100`-confirmation) `12 ARMX/block` Treasury inflows on `ARMX-MAINNET-1` through Block `#108,000`.
+- **Objection, Escrow & Staged-Tranche Settlement:** Draft allocation registry opens for miner review so missing or mismatched solo/pool proofs can be checked before final distribution; disputed/pending items stay in reserve escrow until resolved or expired to Treasury surplus. Approved claims are disbursed in **staged tranches** to the bound `ax1…` addresses, using only `12 ARMX/block` Treasury inflows on `ARMX-MAINNET-1` that have `>= 720` confirmations (beyond `MaxReorganizationDepth`), through Block `#108,000`.
 
 ---
 
@@ -532,9 +564,16 @@ Under the proposed `80%/20%` open-launch subsidy split across `ARMX-MAINNET-1` B
 ### Key Risks Requiring Disclosure
 - **Temporary `20%` Protocol Split Perception:** Although zero blocks are mined privately before public opening (`0` premine, public mining open from Block `#1`), routing `20%` (`12 ARMX/block`) of block subsidies to the protocol Treasury for the first `108,000` blocks (`~150` days) reduces miner base rewards (`48` vs `60 ARMX`) and may still be criticized as a temporary protocol tax.
 - **Consensus & Ecosystem Readiness Dependency:** Unlike private mining, an on-chain `80%/20%` split requires implementing, testing, and independently reviewing dual-coinbase validation (`core/`), `/getblocktemplate` (`node/`), `armminer` (`miner/`), and external Stratum pool compatibility before Mainnet launch freeze.
-- **Staged Cash-Flow Timing:** Because Treasury inflows accrue at `12 ARMX/block` (`~8,640 ARMX/day` at target cadence, subject to `100`-block maturity), Testnet migration payouts and operational budgets must be staged to match matured on-chain balances rather than Day-1 lump sums.
+- **Staged Cash-Flow Timing:** Because Treasury inflows accrue at `12 ARMX/block` (`~8,640 ARMX/day` at target cadence, spendable after `100`-block maturity and scheduled only after `>= 720` confirmations), Testnet migration payouts and operational budgets must be staged to match final on-chain balances rather than Day-1 lump sums.
 - **No Price Prediction:** This document makes **no forecast or claim** that `ARMX` price will rise, fall, or hold any specific valuation.
 - **Why Stage 1 Staging Must Precede Mainnet Launch:** Running Stage 1 isolated staging, adversarial P2P partition/eclipse tests, and open independent security reviews required by [`docs/MAINNET_READINESS.md`](../MAINNET_READINESS.md) ensures Mainnet is never reset for bugs discovered during initial testing.
+
+### Hashrate Response to the `80%/20%` Split (`Armax-ASERT-AW`)
+
+- **No sudden cut at launch:** The split applies from Block `#1`, so miners never see a drop from `60` to `48 ARMX`; `48 ARMX` + fees is the opening reward and difficulty bootstraps against that hashrate.
+- **Single step at `#108,001`:** The base miner reward rises from `48` to `60 ARMX` (`+25%`). If hashrate responds with a comparable step, `Armax-ASERT-AW` (`aserti3-2d`, half-life `τ = 3600 s`, `core/asert.go`) rescales difficulty continuously from accumulated schedule drift. The cumulative drift needed to absorb a sudden `±25%` hashrate step is `τ · log2(1.25) ≈ 1,159 s` (about `9.7` target block intervals); difficulty therefore re-converges within hours, not days.
+- **Partial miner exit during the split:** If some miners mine less during `#1..#108,000` (for example a `20%` hashrate shortfall versus a hypothetical `60 ARMX` launch), ASERT simply settles at a lower difficulty; block spacing returns to `~120 s` and the split end height remains a block height, not a date.
+- **Caveat:** These are first-order estimates assuming an instantaneous hashrate step; real hashrate moves gradually and responds to price, which this plan does not forecast.
 
 ### Risk & Mitigation Matrix
 
@@ -567,11 +606,13 @@ Under the proposed `80%/20%` open-launch subsidy split across `ARMX-MAINNET-1` B
 | `treasury_uncommitted_reserve` | `246,000 ARMX` | Uncommitted Treasury Reserve (requires separate approval) |
 | **Total** | **`1,296,000 ARMX`** | **Full Category Segregation** |
 
-### 10.2 Proposed Custody & Security Controls (`Proposed / TBA`)
-1. **Offline Cold Storage:** Long-term reserves (`treasury_uncommitted_reserve`, `treasury_bridge_reserve`, locked vesting tranches) are planned for offline cold storage.
-2. **Zero Public-Server Keys:** Treasury private keys must **never** be stored on seed nodes, RPC servers, mining pools, or Explorer hosts (`armax_explorer`).
-3. **Multi-Party Authorization (`Proposed / TBA`):** Large transfers or reserve unlocks require documented multi-party review and approval prior to signing; exact cryptographic/multisig custody implementation must be independently verified before holding Mainnet value.
-4. **Separation of Duties:** Budget proposal, technical/accounting verification, and transaction signing/broadcasting must remain accountable across distinct review steps.
+### 10.2 Proposed Custody & Security Controls (`Proposed`, Pending Implementation & Review)
+1. **`M-of-N` ML-DSA-65 Multisig (Required Before Funds Arrive):** The Mainnet `TreasuryAddress` that receives `tx[1]` and every segregated Treasury account must be an on-chain `M-of-N` multisig built on standard `ML-DSA-65` keys (`core/pqsig`), with **`2-of-3` as the default quorum**. The maximum `N` is fixed by the multisig transaction-size design against `MaxTxSize = 20,000 B` (for example, a `3-of-5` spend carrying all five public keys inline is `~19.8 KB`, leaving too little headroom); `N` is published before launch. **`1-of-1` custody is prohibited** for Treasury funds as a single point of failure. Multisig is planned to be active on Mainnet from genesis and disabled on Testnet.
+2. **Air-Gapped Signing:** Each signer key is generated and kept on a separate offline device; partial signatures are produced offline and combined deterministically (ordered by signer index) before broadcast.
+3. **Key Recovery & Geographic Separation:** Every signer keeps an encrypted cold backup (keystore or mnemonic) stored in a geographically separate location from the signing device and from other signers' backups. A single lost device or backup must never reduce the quorum below `M`.
+4. **Rotation & Succession (`Bus Factor`):** If a signer is lost, compromised, or inactive for a defined period (proposed `90` days), the remaining quorum moves funds to a newly published multisig with a replacement signer. A written succession procedure names how replacement signers are selected and announced, so the Treasury survives the unavailability of any single person, including the Founder, across the `~5`-month accumulation and `24`-month vesting periods.
+5. **Zero Public-Server Keys:** Treasury private keys must **never** be stored on seed nodes, RPC servers, mining pools, or Explorer hosts (`armax_explorer`).
+6. **Separation of Duties:** Budget proposal, technical/accounting verification, and transaction signing/broadcasting must remain accountable across distinct review steps.
 
 ### 10.3 Transparency, Feedback & Role Boundaries
 1. **Periodic Public Reporting:** Once operational, publish regular Treasury accounting reports showing opening balances, matured `12 ARMX/block` inflows (`#1..#108,000`), itemized disbursements (including staged migration tranches), on-chain transaction hashes, and remaining reserves.
@@ -602,6 +643,9 @@ flowchart LR
 - [ ] **Stage 1 Completion:** Pass all 5 readiness gates, isolated staging testing, and open independent consensus/cryptographic reviews in [`docs/MAINNET_READINESS.md`](../MAINNET_READINESS.md) (no waiver of Critical/High findings).
 - [ ] **Founder Plan Ratification (`Preliminary -> Final`):** Formally ratify the Two-Stage Open-Launch `80%/20%` Subsidy Split (`Blocks #1..#108,000` / `1,296,000 ARMX`) and Mainnet launch authorization.
 - [ ] **Dual-Coinbase Consensus & Ecosystem Verification:** Implement and independently review `TreasuryAddress` & `TreasurySplitEndHeight = 108000` in `core/network.go`, `core/state.go`, `core/blockchain.go`, `/getblocktemplate` (`node/server.go`), `armminer` (`miner/miner.go`), and external Stratum pool compatibility on Stage 1 staging before `MainnetLaunched = true`.
+- [ ] **Per-Network Address Prefix & Wallet Guards:** Verify Mainnet `ax1…`, Testnet `armx1…` (unchanged), Regtest `axrt1…`, Soak `axsk1…`, and wallet-side rejection of cross-network recipients, keystores, and daemons before signing.
+- [ ] **Multisig Custody Verification:** Implement and independently review `M-of-N` ML-DSA-65 multisig (quorum, duplicate-signature rejection, `MaxTxSize` bound, rotation) and publish the `TreasuryAddress` signer set.
+- [ ] **Migration Claim Tooling:** Verify the signed pool-ledger verifier, the `H_tip >= H_cutoff + 720` snapshot gate, the `>= 720`-confirmation tranche filter, and `armx1… -> ax1…` claim binding.
 - [ ] **Isolated Read-Only Explorer Verification:** Verify Explorer runs strictly off a dedicated read-only mirror node with zero private keys, `/faucet` + `/tx/new` disabled, and live tracking of `48/12 ARMX` splits & Treasury maturity.
 - [ ] **Custody & Vesting Verification:** Independently implement, test, and verify the Treasury custody and staged-tranche disbursement workflow (without assuming untested protocol time-locks).
 - [ ] **Developer & Contributor Grant Approval:** Separately finalize and approve any Core Developer (`<= 100,000 ARMX`) and Community Contributor (`<= 200,000 ARMX`) lists, assessments, and lockup terms.
@@ -639,7 +683,7 @@ This `v1.3` document is a **preliminary, non-final planning draft**. It strictly
 
 ### 13.2 Explicit Unresolved Decisions Pending Founder Approval
 1. **Final Plan Ratification & Launch Authorization:** After Stage 1 isolated staging testing passes, formally ratify the Two-Stage Open-Launch `80% / 20%` Subsidy Split (`48 ARMX` miner / `12 ARMX` Treasury across `Blocks #1..#108,000` = `1,296,000 ARMX`) and authorize Mainnet launch timing (`TBA`).
-2. **Dual-Coinbase Consensus Parameters:** Confirm the immutable `TreasuryAddress`, `TreasurySplitEndHeight = 108000`, and Stratum/miner template specification prior to Mainnet freeze.
+2. **Dual-Coinbase Consensus Parameters:** Confirm the immutable `ax1…` `M-of-N` multisig `TreasuryAddress`, `TreasurySplitEndHeight = 108000`, and Stratum/miner template specification prior to Mainnet freeze.
 3. **Final Approval of Developer & Contributor Criteria:** Approve exact scoring oversight, recipient list, and whether Community Contributors use a `1`-year lockup or lighter threshold terms.
 4. **Final Testnet Migration Ratio, Snapshot Cutoff & Staged-Tranche Schedule:** Confirm or refine the candidate `10:1` ratio, snapshot block height/date (`TBA`), objection-window timelines, and staged-tranche payout cadence (`#1..#108,000`).
 5. **Custody Implementation & Bridge Prerequisite Gate:** Independently verify cold-storage/multi-party custody controls before holding Mainnet Treasury funds; require separate architecture and independent security review before committing any `200,000 ARMX` bridge reserve.
