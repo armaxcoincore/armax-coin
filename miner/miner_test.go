@@ -27,18 +27,37 @@ import (
 
 var (
 	builtBinary string
+	builtDir    string
 	buildOnce   sync.Once
 	buildErr    error
 )
 
+// TestMain removes the per-process build directory after the package runs.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if builtDir != "" {
+		_ = os.RemoveAll(builtDir)
+	}
+	os.Exit(code)
+}
+
 func getMinerBinary(t *testing.T) string {
 	t.Helper()
 	buildOnce.Do(func() {
+		// A unique directory per test process: a fixed shared path lets
+		// concurrent test runs (other branches or worktrees) overwrite or
+		// execute each other's binary.
+		dir, err := os.MkdirTemp("", "armminer-test-")
+		if err != nil {
+			buildErr = err
+			return
+		}
+		builtDir = dir
 		binName := "armminer_test.exe"
 		if runtime.GOOS != "windows" {
 			binName = "armminer_test"
 		}
-		builtBinary = filepath.Join(os.TempDir(), binName)
+		builtBinary = filepath.Join(dir, binName)
 		cmd := exec.Command("go", "build", "-o", builtBinary, ".")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			buildErr = fmt.Errorf("failed to build armminer binary: %v, output: %s", err, string(out))

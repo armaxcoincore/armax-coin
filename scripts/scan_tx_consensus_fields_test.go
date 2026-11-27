@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -87,10 +89,54 @@ func createTestDB(t *testing.T, dir string, tipHeight uint64, mutate func(tx *bo
 	return dbPath
 }
 
+var (
+	scannerBinary string
+	scannerDir    string
+	scannerOnce   sync.Once
+	scannerErr    error
+)
+
+// TestMain removes the per-process build directory after the package runs.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if scannerDir != "" {
+		_ = os.RemoveAll(scannerDir)
+	}
+	os.Exit(code)
+}
+
+// scannerExecutable builds the scanner once per test process. Running
+// "go run" per call recompiled under full-suite load, and a transient
+// build or link failure exited 1, which the tests could not tell apart
+// from a scanner verdict.
+func scannerExecutable(t *testing.T) string {
+	t.Helper()
+	scannerOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "scan-tx-consensus-test-")
+		if err != nil {
+			scannerErr = err
+			return
+		}
+		scannerDir = dir
+		name := "scan_tx_consensus_fields"
+		if runtime.GOOS == "windows" {
+			name += ".exe"
+		}
+		scannerBinary = filepath.Join(dir, name)
+		out, err := exec.Command("go", "build", "-o", scannerBinary, "scan_tx_consensus_fields.go").CombinedOutput()
+		if err != nil {
+			scannerErr = fmt.Errorf("build scanner: %v: %s", err, out)
+		}
+	})
+	if scannerErr != nil {
+		t.Fatal(scannerErr)
+	}
+	return scannerBinary
+}
+
 func runScanner(t *testing.T, args ...string) (string, string, int) {
 	t.Helper()
-	cmdArgs := append([]string{"run", "scan_tx_consensus_fields.go"}, args...)
-	cmd := exec.Command("go", cmdArgs...)
+	cmd := exec.Command(scannerExecutable(t), args...)
 	cmd.Dir = "."
 
 	outBytes, err := cmd.CombinedOutput()
