@@ -68,6 +68,11 @@ type NetworkProfile struct {
 	// switch from legacy JSON Size() to compact TxBinaryV1 BinarySize(). Negative disables it.
 	MempoolBinaryFeeActivationHeight int64          `json:"mempool_binary_fee_activation_height"`
 	Checkpoints                      map[int]string `json:"checkpoints,omitempty"`
+	// AddressHRP is the Bech32 human-readable prefix accepted for addresses on this network.
+	// A distinct prefix per network lets wallets and nodes reject cross-network addresses
+	// before signing. Testnet keeps "armx" because existing Testnet addresses are bound into
+	// its transaction hashes and Genesis.
+	AddressHRP string `json:"address_hrp,omitempty"`
 }
 
 var (
@@ -96,6 +101,7 @@ var (
 		Checkpoints: map[int]string{
 			0: GenesisHash,
 		},
+		AddressHRP: MainnetAddressHRP,
 		DefaultSeeds: []string{
 			"id.armax-coin.cloud:" + MainnetP2PPort,
 			"armax-coin.cloud:" + MainnetP2PPort,
@@ -131,6 +137,7 @@ var (
 		Checkpoints: map[int]string{
 			0: TestnetGenesisHash,
 		},
+		AddressHRP: TestnetAddressHRP,
 		DefaultSeeds: []string{
 			"testnet-seed1.armax-coin.cloud:" + TestnetP2PPort,
 			"testnet-seed2.armax-coin.cloud:" + TestnetP2PPort,
@@ -151,6 +158,7 @@ var (
 		ArmaxHashActivationHeight:   -1,
 		ArmaxHashV2ActivationHeight: -1,
 		DefaultSeeds:                []string{},
+		AddressHRP:                  SoakAddressHRP,
 
 		TimestampRulesActivationHeight:       -1,
 		FutureTimestampLimitActivationHeight: -1,
@@ -175,6 +183,7 @@ var (
 		ArmaxHashActivationHeight:   -1,
 		ArmaxHashV2ActivationHeight: -1,
 		DefaultSeeds:                []string{},
+		AddressHRP:                  RegtestAddressHRP,
 
 		TimestampRulesActivationHeight:       -1,
 		FutureTimestampLimitActivationHeight: -1,

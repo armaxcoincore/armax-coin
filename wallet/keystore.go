@@ -365,6 +365,11 @@ func DecryptAndLoadKeystore(passphrase, filePath string) (*Wallet, error) {
 	// Verify cryptographic binding between decrypted seed and unencrypted keystore metadata
 	if ks.Address != "" && !core.MatchAddress(ks.Address, w.Address) {
 		w.Zeroize()
+		// A keystore created on another network stores that network's address prefix. Report it
+		// clearly instead of as tampering; it still fails closed.
+		if netID, ok := core.NetworkIDForAddress(ks.Address); ok && netID != core.NetworkID() {
+			return nil, fmt.Errorf("keystore belongs to network %s; active network is %s", netID, core.NetworkID())
+		}
 		return nil, errors.New("keystore integrity failure: stored address does not match decrypted private key")
 	}
 	if ks.PublicKey != "" && !strings.EqualFold(strings.TrimSpace(ks.PublicKey), w.PublicKey) {

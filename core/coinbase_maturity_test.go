@@ -74,11 +74,11 @@ func TestCoinbaseMaturityEnforcement(t *testing.T) {
 		target := bc.CalculateLWMA1()
 		bDummy := *NewBlock([]Transaction{{
 			Sender:    "SYSTEM",
-			Recipient: GenesisMiner,
+			Recipient: GenesisMinerForNetwork(""),
 			Amount:    InitialReward,
 			Nonce:     int64(i),
 			Signature: "REWARD_SIG",
-		}}, prev.Hash, i, GenesisMiner, target)
+		}}, prev.Hash, i, GenesisMinerForNetwork(""), target)
 		bDummy.Timestamp = prev.Timestamp + int64(TargetBlockTimeSeconds)
 		for {
 			bDummy.Hash = bDummy.CalculateHash()
@@ -152,12 +152,12 @@ func TestCoinbaseMaturityConsensusRejection(t *testing.T) {
 	target := bc.CalculateLWMA1()
 	cb2 := Transaction{
 		Sender:    "SYSTEM",
-		Recipient: GenesisMiner,
+		Recipient: GenesisMinerForNetwork(""),
 		Amount:    InitialReward + txImmature.Fee,
 		Nonce:     2,
 		Signature: "REWARD_SIG",
 	}
-	bBad := *NewBlock([]Transaction{cb2, txImmature}, prev.Hash, 2, GenesisMiner, target)
+	bBad := *NewBlock([]Transaction{cb2, txImmature}, prev.Hash, 2, GenesisMinerForNetwork(""), target)
 	bBad.Timestamp = prev.Timestamp + int64(TargetBlockTimeSeconds)
 	for {
 		bBad.Hash = bBad.CalculateHash()
@@ -190,11 +190,11 @@ func TestCoinbaseMaturityConsensusRejection(t *testing.T) {
 		tgt := bc.CalculateLWMA1()
 		bDummy := *NewBlock([]Transaction{{
 			Sender:    "SYSTEM",
-			Recipient: GenesisMiner,
+			Recipient: GenesisMinerForNetwork(""),
 			Amount:    InitialReward,
 			Nonce:     int64(i),
 			Signature: "REWARD_SIG",
-		}}, p.Hash, i, GenesisMiner, tgt)
+		}}, p.Hash, i, GenesisMinerForNetwork(""), tgt)
 		bDummy.Timestamp = p.Timestamp + int64(TargetBlockTimeSeconds)
 		for {
 			bDummy.Hash = bDummy.CalculateHash()
@@ -213,12 +213,12 @@ func TestCoinbaseMaturityConsensusRejection(t *testing.T) {
 	target6 := bc.CalculateLWMA1()
 	cb6 := Transaction{
 		Sender:    "SYSTEM",
-		Recipient: GenesisMiner,
+		Recipient: GenesisMinerForNetwork(""),
 		Amount:    InitialReward + txImmature.Fee,
 		Nonce:     6,
 		Signature: "REWARD_SIG",
 	}
-	bValid := *NewBlock([]Transaction{cb6, txImmature}, prev6.Hash, 6, GenesisMiner, target6)
+	bValid := *NewBlock([]Transaction{cb6, txImmature}, prev6.Hash, 6, GenesisMinerForNetwork(""), target6)
 	bValid.Timestamp = prev6.Timestamp + int64(TargetBlockTimeSeconds)
 	for {
 		bValid.Hash = bValid.CalculateHash()

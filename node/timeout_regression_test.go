@@ -114,8 +114,9 @@ func TestMineEndpoint_TimeoutAndCancellation(t *testing.T) {
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel1()
 
+	// Regtest is active, so the miner must carry the Regtest address prefix.
 	payload, _ := json.Marshal(map[string]string{
-		"miner": "armx1psmx4e6yhg84z2h5wadg3698vjlx06flnynhec08fv8nv56z758sl9xl6c",
+		"miner": core.GenesisMinerForNetwork(""),
 	})
 	req, err := http.NewRequestWithContext(ctx1, "POST", server.URL+"/mine", bytes.NewBuffer(payload))
 	if err != nil {

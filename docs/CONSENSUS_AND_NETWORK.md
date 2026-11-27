@@ -18,9 +18,11 @@ Armaxcoin is built from the ground up for the post-quantum era. All user transac
   Implemented using the official Go standard library package `crypto/mldsa` introduced in Go 1.27+.
 - **Address Encoding:**
   Public keys are hashed and formatted as human-readable Bech32 addresses with the human-readable prefix:
-  - Testnet: `armx1...`
-  - Mainnet: `armx1...`
-  - Network profile separation prevents cross-network transaction replay.
+  - Mainnet: `ax1...`
+  - Testnet: `armx1...` (unchanged; bound into Testnet transaction hashes and Genesis)
+  - Regtest: `axrt1...`
+  - Soak: `axsk1...`
+  - Each node and wallet accepts only its own network's prefix, so an address from another network is rejected before signing or validation. Transaction hashes also commit to the Network ID, which prevents cross-network transaction replay.
 
 ### 1.2 Hashing Functions
 - **Block Hashing (Testnet, Blocks 0..519):** Double-SHA256 (`SHA-256d`).
@@ -73,7 +75,7 @@ On the public testnet, PoW consensus evolves across three distinct height eras t
 
 ### 2.2 Mainnet Profile (`ARMX-MAINNET-1` — Locked Provisional Staging)
 
-In `core/network.go`, `core.MainnetLaunched` remains strictly `false` (invoking `-network mainnet` fails closed across all binaries). The current `MainnetProfile` preserves immutable **Double-SHA256 (`SHA-256d`)** Genesis `#0` (`GenesisHash = "0820d429..."`) and holds a **provisional pre-launch staging configuration** for isolated `-local-mainnet` dry runs — **it is not a finalized Mainnet launch specification and remains subject to revision prior to official Mainnet launch freeze**:
+In `core/network.go`, `core.MainnetLaunched` remains strictly `false` (invoking `-network mainnet` fails closed across all binaries). The current `MainnetProfile` uses a **Double-SHA256 (`SHA-256d`)** Genesis `#0` (`GenesisHash = "0ffbf057..."`, burn address under the Mainnet `ax` prefix) and holds a **provisional pre-launch staging configuration** for isolated `-local-mainnet` dry runs — **it is not a finalized Mainnet launch specification and remains subject to revision prior to official Mainnet launch freeze**:
 - **Proof-of-Work (Provisional):** `ArmaxHashActivationHeight = -1`, `ArmaxHashV2ActivationHeight = 1` (**ArmaxHash v2 Stream-Fast**, chained BLAKE2b-512 + BLAKE2b-256, with Difficulty 5 bootstrap limit `ArmaxHashPowLimitHex = "00000fff..."`).
 - **Difficulty Adjustment (Provisional):** `ASERTActivationHeight = 0` (**Armax-ASERT-AW**, anchored to Genesis `#0` at `ArmaxHashPowLimitHex`), `AntiStallActivationHeight = -1` (TEDR disabled).
 - **Timestamps & Block Sizing (Provisional):** `TimestampRulesActivationHeight = 0` (C1/C2 MTP-55 non-decreasing), `FutureTimestampLimitActivationHeight = 0` (C6 10-minute `+600s` limit), and `BlockBinarySizeActivationHeight = 0` (`TxBinaryV1` binary block/tx size accounting from Genesis `#0`).

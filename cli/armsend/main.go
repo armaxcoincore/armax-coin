@@ -484,7 +484,7 @@ func main() {
 	}
 
 	if !core.ValidateAddress(*toPtr) {
-		exitError(*jsonPtr, fmt.Sprintf("Invalid recipient address '%s': must be canonical Bech32 (armx1...)", *toPtr))
+		exitError(*jsonPtr, fmt.Sprintf("Invalid recipient address '%s': must be canonical Bech32 for this network (%s1...)", *toPtr, core.ActiveAddressHRP()))
 	}
 
 	passphrase, err := wallet.PromptPassphrase("ARMX_WALLET_PASSPHRASE", "Enter keystore passphrase: ")

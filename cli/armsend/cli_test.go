@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -352,6 +353,24 @@ func TestAF05_ArmsendPreSignValidationAndBroadcastFlow(t *testing.T) {
 	}
 }
 
+// reencodeAddressForTest re-encodes a Testnet address payload with another network's prefix.
+func reencodeAddressForTest(t *testing.T, testnetAddr, hrp string) string {
+	t.Helper()
+	payloadHex, err := core.AddressToHexForNetwork(testnetAddr, "ARMX-TESTNET-1")
+	if err != nil {
+		t.Fatalf("AddressToHexForNetwork(%s): %v", testnetAddr, err)
+	}
+	payload, err := hex.DecodeString(payloadHex)
+	if err != nil {
+		t.Fatalf("decode address payload: %v", err)
+	}
+	addr, err := core.Bech32Encode(hrp, payload)
+	if err != nil {
+		t.Fatalf("Bech32Encode(%s): %v", hrp, err)
+	}
+	return addr
+}
+
 // TestArmsendBinaryFeeHeightPreSignBalanceCheck verifies REV-T4-02:
 // armsend queries /stats for nextHeight BEFORE the pre-sign spendable balance check, so when
 // MempoolBinaryFeeActivationHeight is active at nextHeight (6,000 Armoids) while height 0 is
@@ -372,6 +391,11 @@ func TestArmsendBinaryFeeHeightPreSignBalanceCheck(t *testing.T) {
 		t.Fatalf("NewWallet recipient failed: %v", err)
 	}
 	defer recipientWallet.Zeroize()
+
+	// armsend runs on Regtest below, so both addresses use the Regtest prefix (axrt1...). The test
+	// process itself runs on Testnet, where wallet.NewWallet derives armx1 addresses.
+	senderWallet.Address = reencodeAddressForTest(t, senderWallet.Address, core.RegtestAddressHRP)
+	regtestRecipient := reencodeAddressForTest(t, recipientWallet.Address, core.RegtestAddressHRP)
 
 	if err := wallet.EncryptAndSaveKeystore(senderWallet, passphrase, walletPath); err != nil {
 		t.Fatalf("EncryptAndSaveKeystore failed: %v", err)
@@ -415,7 +439,7 @@ func TestArmsendBinaryFeeHeightPreSignBalanceCheck(t *testing.T) {
 		"-network", "regtest",
 		"-daemon", srv.URL,
 		"-wallet", walletPath,
-		"-to", recipientWallet.Address,
+		"-to", regtestRecipient,
 		"-amount", "1.0",
 	)
 	if code != 0 {

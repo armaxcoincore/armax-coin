@@ -205,7 +205,9 @@ func appendBlockBinaryHeader(buf []byte, b *Block) ([]byte, error) {
 	merkleRaw, merkleOK := decodeCanonicalHex32(b.MerkleRoot)
 	targetRaw, targetOK := decodeCanonicalHex32(b.Target)
 	hrp, minerRaw, minerErr := Bech32Decode(b.Miner)
-	minerOK := minerErr == nil && hrp == Bech32HRP && len(minerRaw) == AddressPayloadLen
+	// Any built-in network prefix uses the compact fixed encoding, so binary size does not depend on
+	// which network is globally active (Testnet "armx" addresses encode exactly as before).
+	minerOK := minerErr == nil && isKnownAddressHRP(hrp) && len(minerRaw) == AddressPayloadLen
 
 	var hashRaw []byte
 	hasHash := b.Hash != ""
@@ -361,7 +363,7 @@ func (b *Block) UnmarshalBinary(data []byte) error {
 		}
 		decoded.Nonce = int64(binary.LittleEndian.Uint64(data[off : off+8]))
 		off += 8
-		minerAddr, err := Bech32Encode(Bech32HRP, data[off:off+AddressPayloadLen])
+		minerAddr, err := Bech32Encode(ActiveAddressHRP(), data[off:off+AddressPayloadLen])
 		if err != nil {
 			return fmt.Errorf("failed encoding block miner address: %w", err)
 		}

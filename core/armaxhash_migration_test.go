@@ -40,7 +40,7 @@ func TestActivationHeightDeactivatedInvariant(t *testing.T) {
 			}
 
 			// Validate that Block.CalculateHash unconditionally computes SHA-256d
-			b := NewBlock(nil, "0000000000000000000000000000000000000000000000000000000000000000", h, GenesisMiner, DifficultyToTarget(1))
+			b := NewBlock(nil, "0000000000000000000000000000000000000000000000000000000000000000", h, GenesisMinerForNetwork(""), DifficultyToTarget(1))
 			if b.PoWAlgorithm() != "sha256d" {
 				t.Fatalf("height %d PoWAlgorithm returned %s, expected sha256d", h, b.PoWAlgorithm())
 			}
@@ -135,7 +135,7 @@ func TestArmaxHashBackwardCompatibilityAndMigration(t *testing.T) {
 	}
 
 	target := DifficultyToTarget(1)
-	miner := GenesisMiner
+	miner := GenesisMinerForNetwork("")
 
 	// 1. Block at height 5 with activation disabled (-1) -> must be SHA-256d
 	bLegacy := NewBlock(nil, "0000000000000000000000000000000000000000000000000000000000000000", 5, miner, target)
@@ -216,7 +216,7 @@ func TestMultiBlockTransitionAndReorg(t *testing.T) {
 	defer SetArmaxHashActivationHeight(-1)
 
 	// Block #1: SHA-256d (Before activation)
-	b1, err := bc.MineBlockContext(context.Background(), GenesisMiner)
+	b1, err := bc.MineBlockContext(context.Background(), GenesisMinerForNetwork(""))
 	if err != nil {
 		t.Fatalf("mining block 1 failed: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestMultiBlockTransitionAndReorg(t *testing.T) {
 	}
 
 	// Block #2: SHA-256d (Before activation)
-	b2, err := bc.MineBlockContext(context.Background(), GenesisMiner)
+	b2, err := bc.MineBlockContext(context.Background(), GenesisMinerForNetwork(""))
 	if err != nil {
 		t.Fatalf("mining block 2 failed: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestMultiBlockTransitionAndReorg(t *testing.T) {
 	}
 
 	// Block #3: ArmaxHash (Exact activation block)
-	b3, err := bc.MineBlockContext(context.Background(), GenesisMiner)
+	b3, err := bc.MineBlockContext(context.Background(), GenesisMinerForNetwork(""))
 	if err != nil {
 		t.Fatalf("mining block 3 failed: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestMultiBlockTransitionAndReorg(t *testing.T) {
 	}
 
 	// Block #4: ArmaxHash (After activation)
-	b4, err := bc.MineBlockContext(context.Background(), GenesisMiner)
+	b4, err := bc.MineBlockContext(context.Background(), GenesisMinerForNetwork(""))
 	if err != nil {
 		t.Fatalf("mining block 4 failed: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestMultiBlockTransitionAndReorg(t *testing.T) {
 	}
 
 	// Block #5: ArmaxHash (After activation)
-	b5, err := bc.MineBlockContext(context.Background(), GenesisMiner)
+	b5, err := bc.MineBlockContext(context.Background(), GenesisMinerForNetwork(""))
 	if err != nil {
 		t.Fatalf("mining block 5 failed: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestCalculateHashNoFallbackOnArmaxHashFailure(t *testing.T) {
 	}
 
 	target := DifficultyToTarget(1)
-	b := NewBlock(nil, "0000000000000000000000000000000000000000000000000000000000000000", 10, GenesisMiner, target)
+	b := NewBlock(nil, "0000000000000000000000000000000000000000000000000000000000000000", 10, GenesisMinerForNetwork(""), target)
 	sha256dExpected := b.CalculateSha256dHash()
 
 	// Scenario A: Force CalculateArmaxHash failure via oversized header (> 1 MiB)
@@ -422,7 +422,7 @@ func TestCalculateHashSha256dWhenDeactivated(t *testing.T) {
 			t.Fatalf("ArmaxHash must not be active at height %d when activation height is -1", h)
 		}
 
-		b := NewBlock(nil, "0000000000000000000000000000000000000000000000000000000000000000", h, GenesisMiner, target)
+		b := NewBlock(nil, "0000000000000000000000000000000000000000000000000000000000000000", h, GenesisMinerForNetwork(""), target)
 		if b.PoWAlgorithm() != "sha256d" {
 			t.Fatalf("expected sha256d algorithm at height %d, got %s", h, b.PoWAlgorithm())
 		}
@@ -476,13 +476,13 @@ func TestConsensusRejectsArmaxHashFailureAndSentinel(t *testing.T) {
 	// 1. Rejection of block crafted with SHA-256d at height 1
 	cbTx := Transaction{
 		Sender:    "SYSTEM",
-		Recipient: GenesisMiner,
+		Recipient: GenesisMinerForNetwork(""),
 		Amount:    InitialReward,
 		Fee:       0,
 		Nonce:     0,
 		Signature: "REWARD_SIG",
 	}
-	bSha := NewBlock([]Transaction{cbTx}, initTip.Hash, 1, GenesisMiner, target)
+	bSha := NewBlock([]Transaction{cbTx}, initTip.Hash, 1, GenesisMinerForNetwork(""), target)
 	bSha.Hash = bSha.CalculateSha256dHash() // Crafted with legacy SHA-256d!
 
 	if bc.ValidateAndAddBlock(*bSha) {
@@ -510,7 +510,7 @@ func TestConsensusRejectsArmaxHashFailureAndSentinel(t *testing.T) {
 	}
 
 	// 3. Rejection of block using sentinel as PrevHash
-	bNext := NewBlock([]Transaction{cbTx}, "INVALID_HASH_ERROR:parent_failed", 1, GenesisMiner, target)
+	bNext := NewBlock([]Transaction{cbTx}, "INVALID_HASH_ERROR:parent_failed", 1, GenesisMinerForNetwork(""), target)
 	bNext.Hash = bNext.CalculateSha256dHash()
 	if bc.ValidateAndAddBlock(*bNext) {
 		t.Fatal("CRITICAL: ValidateAndAddBlock accepted block with INVALID_HASH_ERROR PrevHash!")
@@ -566,7 +566,7 @@ func TestConsensusRejectsArmaxHashFailureAndSentinel(t *testing.T) {
 	defer mineCancel()
 
 	mineStartTime := time.Now()
-	minedBlk, mineErr := bc.MineBlockContext(mineCtx, GenesisMiner)
+	minedBlk, mineErr := bc.MineBlockContext(mineCtx, GenesisMinerForNetwork(""))
 	mineElapsed := time.Since(mineStartTime)
 
 	if mineErr == nil {
@@ -642,7 +642,7 @@ func TestMineBlockContextConcurrentErrorRejectsBlock(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
 
-	minedBlk, err := bc.MineBlockContext(ctx, GenesisMiner)
+	minedBlk, err := bc.MineBlockContext(ctx, GenesisMinerForNetwork(""))
 
 	// Verify race hook was reached
 	select {
