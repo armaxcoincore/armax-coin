@@ -484,6 +484,11 @@ func main() {
 	}
 
 	if !core.ValidateAddress(*toPtr) {
+		// Fail in the wallet, before any key is unlocked or anything is signed.
+		if netID, ok := core.NetworkIDForAddress(*toPtr); ok {
+			exitError(*jsonPtr, fmt.Sprintf("Rejected before signing: recipient '%s' is a %s address, but armsend targets %s (expected %s1...)",
+				*toPtr, netID, activeNet.NetworkID, core.ActiveAddressHRP()))
+		}
 		exitError(*jsonPtr, fmt.Sprintf("Invalid recipient address '%s': must be canonical Bech32 for this network (%s1...)", *toPtr, core.ActiveAddressHRP()))
 	}
 
@@ -511,7 +516,13 @@ func main() {
 	if resp.StatusCode != http.StatusOK {
 		exitError(*jsonPtr, fmt.Sprintf("Failed to query balance from daemon (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(body))))
 	}
-	if netHeader := strings.TrimSpace(resp.Header.Get("X-Network-ID")); netHeader != "" && !strings.EqualFold(netHeader, activeNet.NetworkID) {
+	// Fail closed: every armcoind (including v1.0.12) sets X-Network-ID on all responses, so a
+	// missing header means the endpoint cannot prove which network it serves.
+	netHeader := strings.TrimSpace(resp.Header.Get("X-Network-ID"))
+	if netHeader == "" {
+		exitError(*jsonPtr, fmt.Sprintf("Network check failed: daemon did not report X-Network-ID; refusing to sign for %s", activeNet.NetworkID))
+	}
+	if !strings.EqualFold(netHeader, activeNet.NetworkID) {
 		exitError(*jsonPtr, fmt.Sprintf("Network mismatch: daemon is on %s, expected %s", netHeader, activeNet.NetworkID))
 	}
 

@@ -749,9 +749,9 @@ const webUIHTML = `<!DOCTYPE html>
             <span class="status-pill" id="lblSendAvailableBadge">Available: 0.00000000</span>
           </div>
           <div class="form-group">
-            <label class="form-label">Recipient Bech32 Address (armx1...)</label>
+            <label class="form-label">Recipient Bech32 Address ({{ADDR_PREFIX}}...) &mdash; <span class="status-pill" id="lblSendNetworkBadge">{{NETWORK_LABEL}}</span></label>
             <div style="display:flex; gap:8px;">
-              <input type="text" class="form-control mono" id="txtSendTo" placeholder="armx1...">
+              <input type="text" class="form-control mono" id="txtSendTo" placeholder="{{ADDR_PREFIX}}...">
               <button type="button" class="btn btn-outline btn-sm" onclick="switchTab('addressbook')">Contacts</button>
             </div>
           </div>
@@ -957,7 +957,7 @@ const webUIHTML = `<!DOCTYPE html>
           </div>
           <div class="form-group">
             <label class="form-label">Armaxcoin Address (armx1...)</label>
-            <input type="text" class="form-control mono" id="txtContactAddr" placeholder="armx1...">
+            <input type="text" class="form-control mono" id="txtContactAddr" placeholder="{{ADDR_PREFIX}}...">
           </div>
           <button type="button" class="btn" onclick="addContact()">Save Contact</button>
         </div>
@@ -1000,7 +1000,7 @@ const webUIHTML = `<!DOCTYPE html>
           </div>
           <div class="form-group">
             <label class="form-label">Destination Mainnet Address</label>
-            <input type="text" class="form-control" placeholder="armx1..." disabled>
+            <input type="text" class="form-control" placeholder="{{ADDR_PREFIX}}..." disabled>
           </div>
         </div>
         <button type="button" class="btn" disabled>Convert Tokens (Coming Soon)</button>
@@ -1252,6 +1252,9 @@ let currentWalletID = "";
 let currentWalletLabel = "Default Wallet";
 let currentWalletUnlocked = false;
 let currentTicker = "{{TICKER}}";
+// Address prefix of the network this GUI runs on (for example "ax1" on Mainnet, "armx1" on Testnet).
+const ACTIVE_ADDR_PREFIX = "{{ADDR_PREFIX}}";
+const ACTIVE_NETWORK_LABEL = "{{NETWORK_LABEL}}";
 let currentMaturity = 10;
 let currentSpendableArmoids = 0;
 let currentFeeEstimate = { min_fee_armoids: 11000, economy_armoids: 11000, standard_armoids: 17000, priority_armoids: 22000 };
@@ -2066,6 +2069,13 @@ async function submitSendTransaction() {
   const passphrase = document.getElementById('txtSendPass').value;
   const box = document.getElementById('sendResultBox');
   const btn = document.getElementById('btnSendTx');
+  // Fail in the wallet before anything is signed: an address of another network never matches
+  // this network's prefix (the server repeats this check authoritatively).
+  if (!to.startsWith(ACTIVE_ADDR_PREFIX)) {
+    box.innerText = 'Rejected before signing: recipient is not a ' + ACTIVE_NETWORK_LABEL +
+      ' address (expected ' + ACTIVE_ADDR_PREFIX + '...). Check that you are not sending to another network.';
+    return;
+  }
   btn.disabled = true;
   try {
     const res = await fetch('/api/send', {
