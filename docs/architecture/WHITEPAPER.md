@@ -70,9 +70,9 @@ To protect against quantum preimage attacks and avoid typos, Armaxcoin employs t
 3. Compute the 6-character BCH polynomial error-detecting checksum with Human-Readable Part (HRP) `"armx"`:
    $$\text{Checksum} = \text{BCHPolymod}(\text{HRP}=\text{"armx"}, \text{Data})$$
 4. Concatenate HRP, separator `'1'`, and data/checksum characters:
-   $$\text{Address} = \text{"armx1"} \parallel \text{Base32}(\text{Payload}) \parallel \text{Checksum}$$
+   $$\text{Address} = \text{HRP} \parallel \text{"1"} \parallel \text{Base32}(\text{Payload}) \parallel \text{Checksum}$$
 
-Every Armaxcoin address begins with **`armx1`** and is exactly 63 characters long in lowercase Bech32 (e.g. `armx17nqa4uyewe8elsn4w8qfygjv7aafkkzj25r8antzdmecwnhpd28sayl2yl`). The Genesis miner burn address consists of 32 zero bytes (`armx1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqplwcdd`).
+The prefix depends on the network: Testnet addresses begin with **`armx1`** and are exactly 63 characters long in lowercase Bech32 (e.g. `armx17nqa4uyewe8elsn4w8qfygjv7aafkkzj25r8antzdmecwnhpd28sayl2yl`); Mainnet uses **`ax1`** (61 characters), Regtest `axrt1`, and Soak `axsk1`. The payload is network-independent, but because the Bech32 checksum covers the prefix, an address of one network never validates on another. The Genesis miner burn address consists of 32 zero bytes (Testnet `armx1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqplwcdd`, Mainnet `ax1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqyum580`).
 
 ### 3.3 BIP-39 Deterministic Mnemonic Recovery & Keystore
 Armaxcoin defaults to 256 bits of cryptographic entropy producing a **24-word BIP-39 mnemonic phrase** (12-word phrases are supported with warning).
