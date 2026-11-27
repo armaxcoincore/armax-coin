@@ -55,30 +55,53 @@ func identityFor(t *testing.T, network string) (*tls.Config, *x509.Certificate) 
 	return conf, leaf
 }
 
-// TestP2PTLS_HybridKEMOnly verifies sessions negotiate a hybrid ML-KEM group and that a peer
-// offering only classical groups is refused.
-func TestP2PTLS_HybridKEMOnly(t *testing.T) {
+// clientConfFor returns the P2P client TLS config as a dial to that network builds it.
+func clientConfFor(mainnet bool) *tls.Config {
+	c := clientTLSConf.Clone()
+	c.CurvePreferences = P2PCurvePreferences(mainnet)
+	return c
+}
+
+// TestP2PTLS_HybridKEMOnlyOnMainnet verifies the hybrid ML-KEM lock on Mainnet (server and
+// client side) and that Testnet keeps Go's defaults, so a classical-only Testnet peer still
+// completes TLS exactly as it did with v1.0.12.
+func TestP2PTLS_HybridKEMOnlyOnMainnet(t *testing.T) {
 	core.LockNetworkForTesting(t)
 	t.Cleanup(func() { _ = core.SetNetwork("testnet") })
-	server, _ := identityFor(t, "testnet")
-
-	cs, err := handshakePair(t, server, clientTLSConf.Clone())
-	if err != nil {
-		t.Fatalf("handshake: %v", err)
-	}
-	if cs.CurveID != tls.X25519MLKEM768 {
-		t.Fatalf("negotiated %v, want X25519MLKEM768", cs.CurveID)
-	}
-
-	// A v1.0.12-style client (Go defaults, no CurvePreferences) still interoperates.
-	legacy := &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13}
-	if cs, err := handshakePair(t, server, legacy); err != nil || cs.CurveID != tls.X25519MLKEM768 {
-		t.Fatalf("default-config client: curve=%v err=%v", cs.CurveID, err)
-	}
-
 	classical := &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13, CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256}}
-	if _, err := handshakePair(t, server, classical); err == nil {
-		t.Fatalf("classical-only client completed a handshake")
+	legacy := &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13} // v1.0.12: Go defaults
+
+	if P2PCurvePreferences(false) != nil {
+		t.Fatalf("non-Mainnet networks must keep Go's default key exchanges")
+	}
+
+	// Testnet: unchanged behaviour.
+	testnetServer, _ := identityFor(t, "testnet")
+	if testnetServer.CurvePreferences != nil {
+		t.Fatalf("Testnet server restricts key exchanges: %v", testnetServer.CurvePreferences)
+	}
+	if cs, err := handshakePair(t, testnetServer, clientConfFor(false)); err != nil || cs.CurveID != tls.X25519MLKEM768 {
+		t.Fatalf("Testnet default handshake: curve=%v err=%v", cs.CurveID, err)
+	}
+	if cs, err := handshakePair(t, testnetServer, classical); err != nil || cs.CurveID != tls.X25519 {
+		t.Fatalf("classical-only Testnet peer must still complete TLS: curve=%v err=%v", cs.CurveID, err)
+	}
+
+	// Mainnet: hybrid ML-KEM only, in both directions.
+	mainnetServer, _ := identityFor(t, "mainnet")
+	if cs, err := handshakePair(t, mainnetServer, clientConfFor(true)); err != nil || cs.CurveID != tls.X25519MLKEM768 {
+		t.Fatalf("Mainnet handshake: curve=%v err=%v", cs.CurveID, err)
+	}
+	if cs, err := handshakePair(t, mainnetServer, legacy); err != nil || cs.CurveID != tls.X25519MLKEM768 {
+		t.Fatalf("default-config client to Mainnet: curve=%v err=%v", cs.CurveID, err)
+	}
+	if _, err := handshakePair(t, mainnetServer, classical); err == nil {
+		t.Fatalf("classical-only client completed a Mainnet handshake")
+	}
+	classicalServer := testnetServer.Clone()
+	classicalServer.CurvePreferences = []tls.CurveID{tls.X25519, tls.CurveP256}
+	if _, err := handshakePair(t, classicalServer, clientConfFor(true)); err == nil {
+		t.Fatalf("Mainnet client completed a handshake with a classical-only server")
 	}
 }
 

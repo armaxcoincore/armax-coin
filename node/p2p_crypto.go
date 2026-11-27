@@ -222,7 +222,7 @@ func InitNodeIdentity(dataDir ...string) (*tls.Config, [32]byte, error) {
 		Certificates:     []tls.Certificate{cert},
 		MinVersion:       tls.VersionTLS13,
 		ClientAuth:       tls.RequestClientCert,
-		CurvePreferences: P2PCurvePreferences(),
+		CurvePreferences: P2PCurvePreferences(core.GetActiveNetwork().IsMainnet),
 	}
 
 	var fp [32]byte
@@ -251,7 +251,8 @@ func init() {
 		// VerifyConnection enforces fail-closed certificate and SPKI presence during the TLS 1.3 handshake.
 		InsecureSkipVerify: true,
 		MinVersion:         tls.VersionTLS13,
-		CurvePreferences:   P2PCurvePreferences(),
+		// CurvePreferences are set per dial from the target network (see P2PCurvePreferences);
+		// this init runs before the network profile is chosen.
 		VerifyConnection: func(cs tls.ConnectionState) error {
 			if len(cs.PeerCertificates) == 0 || len(cs.PeerCertificates[0].RawSubjectPublicKeyInfo) == 0 {
 				return fmt.Errorf("p2p tls: peer presented no valid certificate SPKI")
@@ -423,6 +424,7 @@ func dialEncryptedWithFallbackForNetwork(netID string, addr string, timeout time
 	var tlsConf *tls.Config
 	if clientTLSConf != nil {
 		tlsConf = clientTLSConf.Clone()
+		tlsConf.CurvePreferences = P2PCurvePreferences(isMainnet)
 		if clientIdentity != nil {
 			tlsConf.Certificates = []tls.Certificate{*clientIdentity}
 		}

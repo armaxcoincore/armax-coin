@@ -14,9 +14,10 @@ import (
 
 // Post-quantum P2P transport.
 //
-// Key exchange: every P2P TLS 1.3 session uses a hybrid ML-KEM key exchange only. v1.0.12 nodes
-// (Go 1.27 defaults) already offer X25519MLKEM768 first, so this does not break Testnet peers;
-// a peer started with GODEBUG=tlsmlkem=0 can no longer complete a TLS handshake.
+// Key exchange: on Mainnet every P2P TLS 1.3 session uses a hybrid ML-KEM key exchange only, so
+// a Mainnet peer that offers no ML-KEM group cannot complete a TLS handshake. Every other network
+// keeps Go's defaults, which already prefer X25519MLKEM768, so running Testnet peers (including
+// ones started with GODEBUG=tlsmlkem=0) see no behaviour change.
 //
 // The KEM lock applies inside a TLS session only. While RequireTLS and P2PTOFU are both off, a
 // failed handshake can still fall back to plaintext JSON, so this is not full downgrade
@@ -30,8 +31,12 @@ import (
 // MLDSAIdentityEnv opts a newly generated P2P identity into ML-DSA-65 outside Mainnet.
 const MLDSAIdentityEnv = "ARMX_P2P_MLDSA_IDENTITY"
 
-// P2PCurvePreferences returns the key exchanges accepted for P2P TLS: hybrid ML-KEM only.
-func P2PCurvePreferences() []tls.CurveID {
+// P2PCurvePreferences returns the key exchanges accepted for P2P TLS: hybrid ML-KEM only on
+// Mainnet, and nil (Go's defaults) on every other network.
+func P2PCurvePreferences(mainnet bool) []tls.CurveID {
+	if !mainnet {
+		return nil
+	}
 	return []tls.CurveID{tls.X25519MLKEM768, tls.SecP256r1MLKEM768}
 }
 

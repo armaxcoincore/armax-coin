@@ -213,8 +213,9 @@ Instead of private mining, the following transparent launch procedure is strongl
 
 ## 7. P2P Wire Protocol & Handshake Flow
 
-1. **Transport Layer:** Traffic is encrypted with TLS 1.3, and key exchange is restricted to the hybrid post-quantum groups `X25519MLKEM768` and `SecP256r1MLKEM768`.
-   - `v1.0.12` nodes already offer `X25519MLKEM768` by default. A peer that disables ML-KEM (`GODEBUG=tlsmlkem=0`) cannot complete the handshake.
+1. **Transport Layer:** Traffic is encrypted with TLS 1.3. On Mainnet, key exchange is restricted to the hybrid post-quantum groups `X25519MLKEM768` and `SecP256r1MLKEM768`.
+   - A Mainnet peer that offers no ML-KEM group (for example `GODEBUG=tlsmlkem=0`) cannot complete the handshake.
+   - Testnet, Regtest and Soak keep Go's default key exchanges, which already prefer `X25519MLKEM768` (as `v1.0.12` does), so running Testnet peers see no behaviour change.
    - The KEM restriction applies only inside a TLS session. Unless `RequireTLS` or `P2PTOFU` is enabled, a failed handshake can still fall back to plaintext, so this is not full downgrade protection.
    - Each node has a persistent, self-signed identity stored in `p2ptls.pem`:
      - New Mainnet identities use ML-DSA-65 (TLS scheme `0x0905`).
