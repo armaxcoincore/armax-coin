@@ -7,8 +7,10 @@ import (
 	"crypto/mldsa"
 	"crypto/tls"
 	"crypto/x509"
+	"fmt"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/armaxcoincore/armax-coin/core"
 )
@@ -147,25 +149,66 @@ func TestP2PTLS_OptInMLDSAIdentity(t *testing.T) {
 	}
 }
 
-// TestP2P_InboundHandshakeRateLimit verifies the per-IP pre-TLS bucket in AllowMessage.
+// TestP2P_InboundHandshakeRateLimit verifies the per-subnet pre-TLS bucket: rotating source
+// addresses inside one subnet shares one bucket and one tracker, another subnet is unaffected,
+// and throttling adds no ban score.
 func TestP2P_InboundHandshakeRateLimit(t *testing.T) {
 	ps := &PeerServer{}
-	ip := "203.0.113.7"
 	for i := 0; i < int(inboundHandshakeBurst); i++ {
-		if !ps.AllowMessage(ip, inboundHandshakeMsgType) {
+		addr := fmt.Sprintf("203.0.113.%d:40000", i+1) // a new IP every attempt, same /24
+		if !ps.allowInboundHandshake(addr) {
 			t.Fatalf("attempt %d within burst refused", i+1)
 		}
 	}
-	if ps.AllowMessage(ip, inboundHandshakeMsgType) {
-		t.Fatalf("attempt beyond burst allowed")
+	if ps.allowInboundHandshake("203.0.113.250:40000") {
+		t.Fatalf("attempt beyond the subnet burst allowed from a fresh IP")
 	}
-	if !ps.AllowMessage("203.0.113.8", inboundHandshakeMsgType) {
-		t.Fatalf("another IP was throttled")
+	if !ps.allowInboundHandshake("198.51.100.7:40000") {
+		t.Fatalf("another subnet was throttled")
 	}
+
+	// IPv6 rotation inside one /48 is one bucket as well.
+	for i := 0; i < int(inboundHandshakeBurst); i++ {
+		if !ps.allowInboundHandshake(fmt.Sprintf("[2001:db8:1:%x::1]:40000", i)) {
+			t.Fatalf("IPv6 attempt %d within burst refused", i+1)
+		}
+	}
+	if ps.allowInboundHandshake("[2001:db8:1:ffff::2]:40000") {
+		t.Fatalf("IPv6 attempt beyond the /48 burst allowed")
+	}
+
 	ps.banLock.RLock()
-	score := ps.banScores[ip]
+	trackers := len(ps.rateTrackers)
+	scores := len(ps.banScores)
 	ps.banLock.RUnlock()
-	if score != 0 {
-		t.Fatalf("handshake throttling added ban score %d", score)
+	if trackers != 3 {
+		t.Fatalf("expected one tracker per subnet (3), got %d", trackers)
+	}
+	if scores != 0 {
+		t.Fatalf("handshake throttling added ban scores: %d", scores)
+	}
+}
+
+// TestP2P_InboundHandshakeBannedAndWhitelisted verifies a banned host is refused before TLS and a
+// whitelisted host is never throttled.
+func TestP2P_InboundHandshakeBannedAndWhitelisted(t *testing.T) {
+	ps := &PeerServer{}
+	ps.banLock.Lock()
+	ps.bannedIPs = map[string]time.Time{"192.0.2.9": time.Now().Add(time.Hour)}
+	ps.banLock.Unlock()
+	if ps.allowInboundHandshake("192.0.2.9:40000") {
+		t.Fatalf("banned host passed the pre-TLS check")
+	}
+	if !ps.allowInboundHandshake("192.0.2.10:40000") {
+		t.Fatalf("an unbanned host in the same subnet was refused")
+	}
+
+	ps.whitelistLock.Lock()
+	ps.whitelistIPs = map[string]struct{}{"192.0.2.20": {}}
+	ps.whitelistLock.Unlock()
+	for i := 0; i < 2*int(inboundHandshakeBurst); i++ {
+		if !ps.allowInboundHandshake("192.0.2.20:40000") {
+			t.Fatalf("whitelisted host throttled at attempt %d", i+1)
+		}
 	}
 }
