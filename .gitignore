@@ -42,6 +42,7 @@ blockchain.db.invalid-*
 /armsend
 /armwallet
 /armgui
+/armreconcile
 /armaxd
 *-arm64
 *-amd64

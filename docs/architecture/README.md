@@ -73,6 +73,7 @@ To prevent conflation between speculative design iterations and production-ready
 
 - **[`../governance/TREASURY_MIGRATION_PLAN.md`](../governance/TREASURY_MIGRATION_PLAN.md):** Canonical 1,000,000 ARMX treasury, miner migration, and liquidity framework.
 - **[`tokenomics/mining-accumulation-plan.md`](tokenomics/mining-accumulation-plan.md):** Developer early-mining operational policy (blocks 1..16,667).
+- **[`tokenomics/migration-reconciler.md`](tokenomics/migration-reconciler.md):** Offline `armreconcile` toolkit — signed pool ledgers, ML-DSA-65 migration claims, final-snapshot manifest, and staged treasury tranches.
 - **[`consensus/mainnet-pow-activation.md`](consensus/mainnet-pow-activation.md):** Proposal and analysis for future Mainnet PoW activation.
 - **[`consensus/mldsa65-multisig-custody.md`](consensus/mldsa65-multisig-custody.md):** ML-DSA-65 M-of-N multisig custody (`sig_alg` `0x02`): descriptor, witness, activation, and the air-gapped `armwallet multisig` flow.
 - **[`../CONSENSUS_AND_NETWORK.md`](../CONSENSUS_AND_NETWORK.md):** Canonical Layer-1 mathematical consensus specification.

@@ -78,6 +78,41 @@ func Verify(pubBytes []byte, msg []byte, sig []byte) bool {
 	return verifyWithOptions(pubBytes, msg, sig, signOpts)
 }
 
+// checkApplicationContext rejects contexts that would let an off-chain signature double as a
+// transaction signature, plus lengths outside the FIPS 204 bound of 1..255 bytes.
+func checkApplicationContext(context string) error {
+	if context == "" || len(context) > 255 {
+		return fmt.Errorf("ml-dsa-65 context must be 1..255 bytes, got %d", len(context))
+	}
+	if context == ContextString {
+		return fmt.Errorf("context %q is reserved for transaction signatures", ContextString)
+	}
+	return nil
+}
+
+// SignWithContext signs msg under an application context other than ContextString. Off-chain
+// statements (migration claims, pool ledger exports) use it so their signatures are never valid
+// transaction signatures, and vice versa.
+func (sk *PrivateKey) SignWithContext(msg []byte, context string) ([]byte, error) {
+	if err := checkApplicationContext(context); err != nil {
+		return nil, err
+	}
+	sig, err := sk.inner.Sign(rand.Reader, msg, &mldsa.Options{Context: context})
+	if err != nil {
+		return nil, fmt.Errorf("ml-dsa-65 signing failed: %w", err)
+	}
+	return sig, nil
+}
+
+// VerifyWithContext verifies a signature made by SignWithContext under the same context.
+// ContextString is refused so transaction signatures cannot be replayed as off-chain statements.
+func VerifyWithContext(pubBytes []byte, msg []byte, sig []byte, context string) bool {
+	if checkApplicationContext(context) != nil {
+		return false
+	}
+	return verifyWithOptions(pubBytes, msg, sig, &mldsa.Options{Context: context})
+}
+
 // verifyWithOptions is the single ML-DSA-65 verification path behind Verify. It is
 // split out so the NIST ACVP and Wycheproof vectors, which carry their own context
 // strings, exercise exactly the same length gates and key decoding that consensus

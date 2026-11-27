@@ -21,6 +21,7 @@ ARMMINER="${BIN_DIR}/armminer"
 ARMSEND="${BIN_DIR}/armsend"
 ARMWALLET="${BIN_DIR}/armwallet"
 ARMGUI="${BIN_DIR}/armgui"
+ARMRECONCILE="${BIN_DIR}/armreconcile"
 
 # If binaries are not pre-compiled, build them now
 if [ ! -f "${ARMCOIND}" ]; then
@@ -29,12 +30,13 @@ if [ ! -f "${ARMCOIND}" ]; then
     go build -trimpath -ldflags="-s -w -buildid=" -o "${ARMMINER}" ./miner
     go build -trimpath -ldflags="-s -w -buildid=" -o "${ARMSEND}" ./cli/armsend
     go build -trimpath -ldflags="-s -w -buildid=" -o "${ARMWALLET}" ./cli/armwallet
+    go build -trimpath -ldflags="-s -w -buildid=" -o "${ARMRECONCILE}" ./cli/armreconcile
     if [ -d "gui" ]; then
         go build -trimpath -ldflags="-s -w -buildid=" -o "${ARMGUI}" ./gui
     fi
 fi
 
-chmod +x "${ARMCOIND}" "${ARMMINER}" "${ARMSEND}" "${ARMWALLET}"
+chmod +x "${ARMCOIND}" "${ARMMINER}" "${ARMSEND}" "${ARMWALLET}" "${ARMRECONCILE}"
 if [ -f "${ARMGUI}" ]; then
     chmod +x "${ARMGUI}"
 fi
@@ -50,7 +52,7 @@ fi
 
 # 2. Verify '<bin> -version' across all binaries
 echo "[+] Verifying -version output across binaries..."
-BINS_TO_CHECK=("${ARMCOIND}" "${ARMMINER}" "${ARMSEND}" "${ARMWALLET}")
+BINS_TO_CHECK=("${ARMCOIND}" "${ARMMINER}" "${ARMSEND}" "${ARMWALLET}" "${ARMRECONCILE}")
 if [ -f "${ARMGUI}" ]; then
     BINS_TO_CHECK+=("${ARMGUI}")
 fi
