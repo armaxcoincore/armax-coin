@@ -74,6 +74,10 @@ foreach ($t in $targets) {
     go build -trimpath -ldflags "-s -w -buildid=" -o (Join-Path $tempDist "armwallet$ext") ./cli/armwallet
     if (-not (Test-Path (Join-Path $tempDist "armwallet$ext"))) { throw "Failed to build armwallet$ext for $os/$arch" }
 
+    Write-Host "    -> armreconcile$ext"
+    go build -trimpath -ldflags "-s -w -buildid=" -o (Join-Path $tempDist "armreconcile$ext") ./cli/armreconcile
+    if (-not (Test-Path (Join-Path $tempDist "armreconcile$ext"))) { throw "Failed to build armreconcile$ext for $os/$arch" }
+
     # Desktop GUI Wallet (Embedded WebView2 Desktop GUI on Windows, Web Desktop GUI on Linux/macOS)
     if ($os -eq "windows" -and $arch -eq "amd64") {
         Write-Host "    -> armgui.exe (Windows Desktop GUI)"

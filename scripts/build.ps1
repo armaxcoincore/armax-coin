@@ -43,6 +43,9 @@ go build -o (Join-Path $BinDir "armwallet.exe") ./cli/armwallet
 Write-Host "[+] Compiling Desktop GUI Wallet & Node (bin/armgui.exe)..."
 go build -ldflags="-H=windowsgui" -o (Join-Path $BinDir "armgui.exe") ./gui
 
+Write-Host "[+] Compiling Migration Reconciler CLI (bin/armreconcile.exe)..."
+go build -o (Join-Path $BinDir "armreconcile.exe") ./cli/armreconcile
+
 # Optional Authenticode signing if local code-signing certificate is available
 $SigningCert = $null
 $PfxPath = Join-Path $RepoRoot "signing_keys\armax-code-signing.pfx"
@@ -65,7 +68,7 @@ if (-not $SigningCert) {
 
 if ($SigningCert) {
     Write-Host "[+] Signing Windows binaries with Authenticode ($($SigningCert.Thumbprint))..." -ForegroundColor Cyan
-    foreach ($Exe in @("armcoind.exe", "armminer.exe", "armsend.exe", "armwallet.exe", "armgui.exe")) {
+    foreach ($Exe in @("armcoind.exe", "armminer.exe", "armsend.exe", "armwallet.exe", "armgui.exe", "armreconcile.exe")) {
         $ExePath = Join-Path $BinDir $Exe
         if (Test-Path $ExePath) {
             $sig = Set-AuthenticodeSignature -FilePath $ExePath -Certificate $SigningCert -HashAlgorithm SHA256 -TimestampServer "http://timestamp.digicert.com" -ErrorAction SilentlyContinue
