@@ -4,7 +4,7 @@
 
 **Target Release:** Armaxcoin v1.0.13 — P2P DoS & Slot Isolation Hardening, Consensus/Storage Integrity, Wallet/Miner/GUI Security & Peer Privacy, `github.com/armaxcoincore/armax-coin` Migration, and Mainnet-Gated Multisig Custody, Treasury Split & Per-Network Addresses
 
-**Release Date:** 2026-11-27
+**Release Date:** 2026-11-28
 
 **Status:** Active Testnet Release (100% rolling P2P & consensus backward compatible with `v1.0.10`–`v1.0.12` on `ARMX-TESTNET-1`; zero hard forks; `MainnetLaunched = false` with Mainnet provisional and subject to change prior to launch freeze)
 

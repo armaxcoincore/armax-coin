@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [v1.0.13] - 2026-11-27
+## [v1.0.13] - 2026-11-28
 
 ### Added
 - **Adversarial & Benchmark Verification Suite (`node/adversarial_scenarios_benchmark_test.go`):** Added 8-scenario adversarial & benchmark suite covering P2P partition/eclipse recovery, malformed/deflate-bomb storm survival, boundary `720`/`721` reorgs, C6 `+600s` clock-skew penalties, orphan-pool flood liveness, BoltDB corruption & tampered block+snapshot fail-closed checks, `v1.0.12 -> v1.0.13` rolling upgrade, and a `375` ML-DSA-65 tx full-block `TxBinaryV1` benchmark (`393.50ms` verify, `215.27ms` TLS P2P E2E).
