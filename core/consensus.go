@@ -200,15 +200,8 @@ func validateBlockContext(b *Block, prev *Block, chainHistory []Block, isHistori
 	for idx := range b.Transactions {
 		var txSize int
 		if useAltProfile {
-			if altProf.BlockBinarySizeActivationHeight >= 0 && int64(b.Index) >= altProf.BlockBinarySizeActivationHeight {
-				if binSz := b.Transactions[idx].BinarySize(); binSz > 0 {
-					txSize = binSz
-				} else {
-					txSize = b.Transactions[idx].Size()
-				}
-			} else {
-				txSize = b.Transactions[idx].Size()
-			}
+			altBinary := altProf.BlockBinarySizeActivationHeight >= 0 && int64(b.Index) >= altProf.BlockBinarySizeActivationHeight
+			txSize = effectiveTxSize(&b.Transactions[idx], altBinary)
 		} else {
 			txSize = EffectiveTxSize(&b.Transactions[idx], b.Index)
 		}

@@ -73,6 +73,10 @@ type NetworkProfile struct {
 	// before signing. Testnet keeps "armx" because existing Testnet addresses are bound into
 	// its transaction hashes and Genesis.
 	AddressHRP string `json:"address_hrp,omitempty"`
+	// MultisigActivationHeight is the first block height that accepts ML-DSA-65 M-of-N multisig
+	// spends (SigAlg 0x02). Zero or negative disables them, so a profile that omits the field
+	// fails closed. Genesis #0 carries no user transactions, so 1 means "from launch".
+	MultisigActivationHeight int64 `json:"multisig_activation_height,omitempty"`
 }
 
 var (
@@ -101,7 +105,8 @@ var (
 		Checkpoints: map[int]string{
 			0: GenesisHash,
 		},
-		AddressHRP: MainnetAddressHRP,
+		AddressHRP:               MainnetAddressHRP,
+		MultisigActivationHeight: 1, // Treasury custody multisig from the first spendable block
 		DefaultSeeds: []string{
 			"id.armax-coin.cloud:" + MainnetP2PPort,
 			"armax-coin.cloud:" + MainnetP2PPort,
@@ -137,7 +142,8 @@ var (
 		Checkpoints: map[int]string{
 			0: TestnetGenesisHash,
 		},
-		AddressHRP: TestnetAddressHRP,
+		AddressHRP:               TestnetAddressHRP,
+		MultisigActivationHeight: -1, // Not deployed on Testnet: v1.0.12 nodes cannot parse SigAlg 0x02
 		DefaultSeeds: []string{
 			"testnet-seed1.armax-coin.cloud:" + TestnetP2PPort,
 			"testnet-seed2.armax-coin.cloud:" + TestnetP2PPort,
@@ -159,6 +165,7 @@ var (
 		ArmaxHashV2ActivationHeight: -1,
 		DefaultSeeds:                []string{},
 		AddressHRP:                  SoakAddressHRP,
+		MultisigActivationHeight:    -1,
 
 		TimestampRulesActivationHeight:       -1,
 		FutureTimestampLimitActivationHeight: -1,
@@ -184,6 +191,7 @@ var (
 		ArmaxHashV2ActivationHeight: -1,
 		DefaultSeeds:                []string{},
 		AddressHRP:                  RegtestAddressHRP,
+		MultisigActivationHeight:    1,
 
 		TimestampRulesActivationHeight:       -1,
 		FutureTimestampLimitActivationHeight: -1,

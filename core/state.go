@@ -261,6 +261,9 @@ func (sm *StateManager) VerifyAndApplyBlock(b *Block, allowedBlockReward int64, 
 			return fmt.Errorf("block #%d tx #%d self-transfer rejected (sender cannot be recipient)", b.Index, idx)
 		}
 
+		if err := checkMultisigActivation(&tx, b.Index); err != nil {
+			return fmt.Errorf("block #%d tx #%d %v", b.Index, idx, err)
+		}
 		if !tx.Verify() {
 			return fmt.Errorf("block #%d tx #%d cryptographic signature verification failed", b.Index, idx)
 		}
