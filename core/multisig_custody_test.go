@@ -56,7 +56,7 @@ func useRegtestForMultisig(t *testing.T) {
 }
 
 // TestMultisigDescriptor_CanonicalBounds verifies key ordering, duplicate rejection, and the
-// Founder-approved bounds (2 <= M <= 3, M <= N <= 4).
+// MaxTxSize-derived bounds (2 <= M <= 3, M <= N <= 4).
 func TestMultisigDescriptor_CanonicalBounds(t *testing.T) {
 	_, pubs := multisigTestKeys(t, 5)
 
