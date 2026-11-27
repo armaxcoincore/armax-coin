@@ -190,21 +190,21 @@ var (
 const MainnetLaunched = false
 
 var (
-	netMu                                   sync.RWMutex
-	ActiveNetwork                           = TestnetProfile // [L4-1] Testnet is default network profile
-	networkInitialized                      bool
-	allowNetworkResetHook                   func() bool
-	allowMainnetInTestsHook                 func() bool
-	networkIDOverrideHook                   func() string
-	armaxHashActivationHeightOverride       *int64 // nil means use network profile or env
-	armaxHashV2ActivationHeightOverride     *int64 // nil means use network profile or env
-	timestampRulesHeightOverride            *int64 // nil means use network profile
-	futureLimitHeightOverride               *int64 // nil means use network profile
-	antiStallActivationHeightOverride       *int64 // nil means use network profile
-	asertActivationHeightOverride           *int64 // nil means use network profile
-	blockBinarySizeActivationHeightOverride *int64 // nil means use network profile
+	netMu                                    sync.RWMutex
+	ActiveNetwork                            = TestnetProfile // [L4-1] Testnet is default network profile
+	networkInitialized                       bool
+	allowNetworkResetHook                    func() bool
+	allowMainnetInTestsHook                  func() bool
+	networkIDOverrideHook                    func() string
+	armaxHashActivationHeightOverride        *int64 // nil means use network profile or env
+	armaxHashV2ActivationHeightOverride      *int64 // nil means use network profile or env
+	timestampRulesHeightOverride             *int64 // nil means use network profile
+	futureLimitHeightOverride                *int64 // nil means use network profile
+	antiStallActivationHeightOverride        *int64 // nil means use network profile
+	asertActivationHeightOverride            *int64 // nil means use network profile
+	blockBinarySizeActivationHeightOverride  *int64 // nil means use network profile
 	mempoolBinaryFeeActivationHeightOverride *int64 // nil means use network profile
-	testGlobalNetworkLock                   sync.Mutex
+	testGlobalNetworkLock                    sync.Mutex
 
 	localMainnetMu      sync.RWMutex
 	localMainnetEnabled bool
