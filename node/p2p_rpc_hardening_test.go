@@ -637,10 +637,10 @@ func TestP2PRPC_CorruptNodeTLSCertAndAuthLockoutHardening(t *testing.T) {
 }
 
 // TestP2P_InboundDisconnectReasonObservability verifies:
-// 1) classifyInboundDisconnectReason distinguishes remote_eof, handshake_timeout, idle_timeout,
-//    peer_reset, local_closed, frame_too_large, and payload_budget_exhausted.
-// 2) handleConnectionWithRelease logs reason, duration, msgs, active_before, and active (post-decrement)
-//    when P2P debug logging is enabled.
+//  1. classifyInboundDisconnectReason distinguishes remote_eof, handshake_timeout, idle_timeout,
+//     peer_reset, local_closed, frame_too_large, and payload_budget_exhausted.
+//  2. handleConnectionWithRelease logs reason, duration, msgs, active_before, and active (post-decrement)
+//     when P2P debug logging is enabled.
 func TestP2P_InboundDisconnectReasonObservability(t *testing.T) {
 	timeoutErr := os.ErrDeadlineExceeded
 	if got := classifyInboundDisconnectReason(io.EOF, AuthenticatedIdleTimeout, 3); got != "remote_eof" {

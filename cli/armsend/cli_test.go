@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,18 +22,37 @@ import (
 
 var (
 	sendBinary string
+	sendDir    string
 	sendOnce   sync.Once
 	sendErr    error
 )
 
+// TestMain removes the per-process build directory after the package runs.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if sendDir != "" {
+		_ = os.RemoveAll(sendDir)
+	}
+	os.Exit(code)
+}
+
 func armsendBinary(t *testing.T) string {
 	t.Helper()
 	sendOnce.Do(func() {
+		// A unique directory per test process: a fixed shared path lets
+		// concurrent test runs (other branches or worktrees) overwrite or
+		// execute each other's binary.
+		dir, err := os.MkdirTemp("", "armsend-cli-test-")
+		if err != nil {
+			sendErr = err
+			return
+		}
+		sendDir = dir
 		name := "armsend_cli_test"
 		if runtime.GOOS == "windows" {
 			name += ".exe"
 		}
-		sendBinary = filepath.Join(os.TempDir(), name)
+		sendBinary = filepath.Join(dir, name)
 		if out, err := exec.Command("go", "build", "-o", sendBinary, "main.go").CombinedOutput(); err != nil {
 			sendErr = &buildError{err: err, out: string(out)}
 		}
@@ -301,6 +321,46 @@ func TestAF05_ArmsendPreSignValidationAndBroadcastFlow(t *testing.T) {
 		t.Fatalf("expected 0 broadcast calls on X-Network-ID mismatch, got %d", broadcastCalls)
 	}
 
+	// Case 3b: Missing X-Network-ID fails closed before signing/broadcast
+	mu.Lock()
+	balanceNetID = ""
+	mu.Unlock()
+	atomic.StoreInt32(&broadcastCalls, 0)
+	out, code = runArmsendWithEnv(t, env,
+		"-network", "testnet",
+		"-daemon", srv.URL,
+		"-wallet", walletPath,
+		"-to", recipientWallet.Address,
+		"-amount", "1.0",
+	)
+	if code == 0 || !strings.Contains(out, "did not report X-Network-ID") {
+		t.Fatalf("expected fail-closed error on missing X-Network-ID, code=%d out=%s", code, out)
+	}
+	if atomic.LoadInt32(&broadcastCalls) != 0 {
+		t.Fatalf("expected 0 broadcast calls on missing X-Network-ID, got %d", broadcastCalls)
+	}
+
+	// Case 3c: A recipient of another network (Mainnet ax1...) is rejected in the wallet before
+	// /balance is queried or anything is signed.
+	mu.Lock()
+	balanceNetID = "ARMX-TESTNET-1"
+	mu.Unlock()
+	atomic.StoreInt32(&balanceCalls, 0)
+	atomic.StoreInt32(&broadcastCalls, 0)
+	out, code = runArmsendWithEnv(t, env,
+		"-network", "testnet",
+		"-daemon", srv.URL,
+		"-wallet", walletPath,
+		"-to", reencodeAddressForTest(t, recipientWallet.Address, core.MainnetAddressHRP),
+		"-amount", "1.0",
+	)
+	if code == 0 || !strings.Contains(out, "Rejected before signing") || !strings.Contains(out, "ARMX-MAINNET-1") {
+		t.Fatalf("expected cross-network recipient rejection, code=%d out=%s", code, out)
+	}
+	if atomic.LoadInt32(&balanceCalls) != 0 || atomic.LoadInt32(&broadcastCalls) != 0 {
+		t.Fatalf("expected no daemon calls for cross-network recipient, got balance=%d broadcast=%d", balanceCalls, broadcastCalls)
+	}
+
 	// Case 4: Valid matching network and sufficient balance signs and broadcasts successfully
 	mu.Lock()
 	balanceNetID = "ARMX-TESTNET-1"
@@ -333,6 +393,46 @@ func TestAF05_ArmsendPreSignValidationAndBroadcastFlow(t *testing.T) {
 	}
 }
 
+// reencodeAddressForTest re-encodes a Testnet address payload with another network's prefix.
+func reencodeAddressForTest(t *testing.T, testnetAddr, hrp string) string {
+	t.Helper()
+	payloadHex, err := core.AddressToHexForNetwork(testnetAddr, "ARMX-TESTNET-1")
+	if err != nil {
+		t.Fatalf("AddressToHexForNetwork(%s): %v", testnetAddr, err)
+	}
+	payload, err := hex.DecodeString(payloadHex)
+	if err != nil {
+		t.Fatalf("decode address payload: %v", err)
+	}
+	addr, err := core.Bech32Encode(hrp, payload)
+	if err != nil {
+		t.Fatalf("Bech32Encode(%s): %v", hrp, err)
+	}
+	return addr
+}
+
+// retagKeystoreNetworkForTest rewrites a keystore's network tag, so a keystore written by this
+// Testnet test process can stand in for one created on another network.
+func retagKeystoreNetworkForTest(t *testing.T, path, netID string) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read keystore: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse keystore: %v", err)
+	}
+	doc["network"] = netID
+	out, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal keystore: %v", err)
+	}
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		t.Fatalf("write keystore: %v", err)
+	}
+}
+
 // TestArmsendBinaryFeeHeightPreSignBalanceCheck verifies REV-T4-02:
 // armsend queries /stats for nextHeight BEFORE the pre-sign spendable balance check, so when
 // MempoolBinaryFeeActivationHeight is active at nextHeight (6,000 Armoids) while height 0 is
@@ -354,9 +454,15 @@ func TestArmsendBinaryFeeHeightPreSignBalanceCheck(t *testing.T) {
 	}
 	defer recipientWallet.Zeroize()
 
+	// armsend runs on Regtest below, so both addresses use the Regtest prefix (axrt1...). The test
+	// process itself runs on Testnet, where wallet.NewWallet derives armx1 addresses.
+	senderWallet.Address = reencodeAddressForTest(t, senderWallet.Address, core.RegtestAddressHRP)
+	regtestRecipient := reencodeAddressForTest(t, recipientWallet.Address, core.RegtestAddressHRP)
+
 	if err := wallet.EncryptAndSaveKeystore(senderWallet, passphrase, walletPath); err != nil {
 		t.Fatalf("EncryptAndSaveKeystore failed: %v", err)
 	}
+	retagKeystoreNetworkForTest(t, walletPath, "ARMX-REGTEST-1")
 
 	const sendAmount int64 = 1 * core.CoinUnit
 	const exactBinaryBalance int64 = sendAmount + 6000 // < sendAmount + 11000
@@ -396,7 +502,7 @@ func TestArmsendBinaryFeeHeightPreSignBalanceCheck(t *testing.T) {
 		"-network", "regtest",
 		"-daemon", srv.URL,
 		"-wallet", walletPath,
-		"-to", recipientWallet.Address,
+		"-to", regtestRecipient,
 		"-amount", "1.0",
 	)
 	if code != 0 {

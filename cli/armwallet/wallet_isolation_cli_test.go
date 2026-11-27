@@ -13,7 +13,7 @@ import (
 // creates the wallet in <ARMX_DATA_DIR>/<network>/wallet.json.
 func TestCLI_DefaultWalletNetworkPath(t *testing.T) {
 	tempDir := t.TempDir()
-	cmd := exec.Command("go", "run", "main.go", "-network", "testnet", "-create")
+	cmd := exec.Command("go", "run", ".", "-network", "testnet", "-create")
 	cmd.Env = append(os.Environ(),
 		"ARMX_DATA_DIR="+tempDir,
 		"ARMX_WALLET_PASSPHRASE=testpassword123",
@@ -42,7 +42,7 @@ func TestCLI_ExplicitFileFlagOverridesNetworkDefault(t *testing.T) {
 	tempDir := t.TempDir()
 	customPath := filepath.Join(tempDir, "custom_named_wallet.json")
 
-	cmd := exec.Command("go", "run", "main.go", "-network", "testnet", "-file", customPath, "-create")
+	cmd := exec.Command("go", "run", ".", "-network", "testnet", "-file", customPath, "-create")
 	cmd.Env = append(os.Environ(),
 		"ARMX_DATA_DIR="+tempDir,
 		"ARMX_WALLET_PASSPHRASE=testpassword123",
@@ -70,7 +70,7 @@ func TestCLI_ExplicitWalletFlagAlias(t *testing.T) {
 	tempDir := t.TempDir()
 	customPath := filepath.Join(tempDir, "alias_named_wallet.json")
 
-	cmd := exec.Command("go", "run", "main.go", "-network", "testnet", "-wallet", customPath, "-create")
+	cmd := exec.Command("go", "run", ".", "-network", "testnet", "-wallet", customPath, "-create")
 	cmd.Env = append(os.Environ(),
 		"ARMX_DATA_DIR="+tempDir,
 		"ARMX_WALLET_PASSPHRASE=testpassword123",
@@ -89,7 +89,7 @@ func TestCLI_ExplicitWalletFlagAlias(t *testing.T) {
 // TestCLI_LocalMainnetUsesMainnetWallet verifies that -local-mainnet isolates into mainnet/wallet.json.
 func TestCLI_LocalMainnetUsesMainnetWallet(t *testing.T) {
 	tempDir := t.TempDir()
-	cmd := exec.Command("go", "run", "main.go", "-local-mainnet", "-create")
+	cmd := exec.Command("go", "run", ".", "-local-mainnet", "-create")
 	cmd.Env = append(os.Environ(),
 		"ARMX_DATA_DIR="+tempDir,
 		"ARMX_WALLET_PASSPHRASE=testpassword123",
@@ -123,7 +123,7 @@ func TestCLI_LegacyWalletNoticePreserved(t *testing.T) {
 	}
 	initialHash := sha256.Sum256(legacyContent)
 
-	cmd := exec.Command("go", "run", "main.go", "-network", "testnet", "-create")
+	cmd := exec.Command("go", "run", ".", "-network", "testnet", "-create")
 	cmd.Env = append(os.Environ(),
 		"ARMX_DATA_DIR="+tempDir,
 		"ARMX_WALLET_PASSPHRASE=testpassword123",

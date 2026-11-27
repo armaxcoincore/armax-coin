@@ -178,7 +178,14 @@ func EffectiveTxSize(tx *Transaction, blockIndex ...int) int {
 	if len(blockIndex) > 0 {
 		h = blockIndex[0]
 	}
-	if IsBlockBinarySizeActive(h) {
+	return effectiveTxSize(tx, IsBlockBinarySizeActive(h))
+}
+
+// effectiveTxSize returns BinarySize when binary sizing applies, else JSON Size. Multisig spends
+// are a new transaction kind with no legacy JSON sizing to preserve, so they are always sized in
+// TxBinaryV1; their hex JSON form is roughly twice as large and would not fit MaxTxSize.
+func effectiveTxSize(tx *Transaction, binaryActive bool) int {
+	if binaryActive || tx.SigAlg == SigAlgMultisigMLDSA65 {
 		if binSz := tx.BinarySize(); binSz > 0 {
 			return binSz
 		}
@@ -197,12 +204,7 @@ func FeeEffectiveTxSize(tx *Transaction, blockIndex ...int) int {
 	if len(blockIndex) > 0 {
 		h = blockIndex[0]
 	}
-	if IsMempoolBinaryFeeActive(h) {
-		if binSz := tx.BinarySize(); binSz > 0 {
-			return binSz
-		}
-	}
-	return tx.Size()
+	return effectiveTxSize(tx, IsMempoolBinaryFeeActive(h))
 }
 
 // BinarySize returns the deterministic byte length of the TxBinaryV1 encoding, caching the result thread-safely.
@@ -267,7 +269,18 @@ func (tx *Transaction) MarshalBinary() ([]byte, error) {
 
 	var pubBytes, sigBytes []byte
 	strictLower := GetActiveNetwork().IsMainnet
-	if !isCoinbase {
+	isMultisig := !isCoinbase && tx.SigAlg == SigAlgMultisigMLDSA65
+	if isMultisig {
+		var err error
+		pubBytes, sigBytes, err = tx.multisigWireFields()
+		if err != nil {
+			return nil, err
+		}
+		derivedSender, err := PubToAddress(tx.SigAlg, pubBytes)
+		if err != nil || tx.Sender != derivedSender {
+			flags |= txFlagCustomSender
+		}
+	} else if !isCoinbase {
 		if len(tx.SenderPub) != 2*pqsig.PublicKeySize || !isHex(tx.SenderPub) || (strictLower && !isLowerHex(tx.SenderPub)) {
 			return nil, fmt.Errorf("invalid sender public key hex length or encoding: got %d, want %d hex chars", len(tx.SenderPub), 2*pqsig.PublicKeySize)
 		}
@@ -297,7 +310,8 @@ func (tx *Transaction) MarshalBinary() ([]byte, error) {
 	}
 
 	var recipPayload []byte
-	if hrp, p, err := Bech32Decode(tx.Recipient); err == nil && hrp == Bech32HRP && len(p) == AddressPayloadLen {
+	// Any built-in network prefix uses the compact payload encoding; see appendBlockBinaryHeader.
+	if hrp, p, err := Bech32Decode(tx.Recipient); err == nil && isKnownAddressHRP(hrp) && len(p) == AddressPayloadLen {
 		recipPayload = p
 	} else {
 		flags |= txFlagRawRecipient
@@ -310,11 +324,15 @@ func (tx *Transaction) MarshalBinary() ([]byte, error) {
 	buf := make([]byte, 0, estCap)
 	buf = append(buf, TxBinaryVersionV1, flags, tx.SigAlg)
 
-	if !isCoinbase {
+	var err error
+	if isMultisig {
+		if buf, err = appendU16Bytes(buf, pubBytes); err != nil {
+			return nil, err
+		}
+	} else if !isCoinbase {
 		buf = append(buf, pubBytes...)
 	}
 
-	var err error
 	if (flags & txFlagCustomSender) != 0 {
 		buf, err = appendU16Bytes(buf, []byte(tx.Sender))
 		if err != nil {
@@ -348,6 +366,10 @@ func (tx *Transaction) MarshalBinary() ([]byte, error) {
 			if err != nil {
 				return nil, err
 			}
+		}
+	} else if isMultisig {
+		if buf, err = appendU16Bytes(buf, sigBytes); err != nil {
+			return nil, err
 		}
 	} else {
 		buf = append(buf, sigBytes...)
@@ -434,7 +456,17 @@ func (tx *Transaction) UnmarshalBinary(data []byte) error {
 	decoded.SigAlg = sigAlg
 
 	var pubBytes []byte
-	if !isCoinbase {
+	isMultisig := !isCoinbase && sigAlg == SigAlgMultisigMLDSA65
+	if isMultisig {
+		var err error
+		if pubBytes, err = readU16Bytes(data, &off); err != nil {
+			return fmt.Errorf("failed reading multisig descriptor: %w", err)
+		}
+		if len(pubBytes) == 0 {
+			return errors.New("tx binary: empty multisig descriptor")
+		}
+		decoded.SenderPub = hex.EncodeToString(pubBytes)
+	} else if !isCoinbase {
 		if off+pqsig.PublicKeySize > len(data) {
 			return errors.New("unexpected EOF reading sender public key")
 		}
@@ -463,7 +495,7 @@ func (tx *Transaction) UnmarshalBinary(data []byte) error {
 		if off+AddressPayloadLen > len(data) {
 			return errors.New("unexpected EOF reading recipient payload")
 		}
-		addr, err := Bech32Encode(Bech32HRP, data[off:off+AddressPayloadLen])
+		addr, err := Bech32Encode(ActiveAddressHRP(), data[off:off+AddressPayloadLen])
 		if err != nil {
 			return fmt.Errorf("failed encoding recipient address: %w", err)
 		}
@@ -505,6 +537,15 @@ func (tx *Transaction) UnmarshalBinary(data []byte) error {
 		default:
 			return fmt.Errorf("invalid coinbase signature mode: 0x%02x", cbMode)
 		}
+	} else if isMultisig {
+		w, err := readU16Bytes(data, &off)
+		if err != nil {
+			return fmt.Errorf("failed reading multisig witness: %w", err)
+		}
+		if len(w) == 0 {
+			return errors.New("tx binary: empty multisig witness")
+		}
+		decoded.Signature = hex.EncodeToString(w)
 	} else {
 		if off+pqsig.SignatureSize > len(data) {
 			return errors.New("unexpected EOF reading ML-DSA-65 signature")
@@ -654,6 +695,13 @@ func (tx *Transaction) ValidateCanonicalHex() error {
 	if tx == nil || tx.IsCoinbase() {
 		return nil
 	}
+	if tx.SigAlg == SigAlgMultisigMLDSA65 {
+		// Lengths depend on M and N and are checked against the descriptor in validateBasic.
+		if tx.SenderPub == "" || !isLowerHex(tx.SenderPub) || tx.Signature == "" || !isLowerHex(tx.Signature) {
+			return errors.New("multisig sender_pub and signature must be canonical lowercase hex")
+		}
+		return nil
+	}
 	if len(tx.SenderPub) != 2*pqsig.PublicKeySize || !isLowerHex(tx.SenderPub) {
 		return fmt.Errorf("sender_pub must be %d canonical lowercase hex characters", 2*pqsig.PublicKeySize)
 	}
@@ -682,6 +730,14 @@ func (tx *Transaction) VerifyWithError() error {
 	}
 
 	if tx.IsSignatureVerified() {
+		return nil
+	}
+
+	if tx.SigAlg == SigAlgMultisigMLDSA65 {
+		if err := tx.verifyMultisigSignatures(); err != nil {
+			return err
+		}
+		tx.MarkSignatureVerified()
 		return nil
 	}
 
@@ -778,7 +834,10 @@ func (tx *Transaction) validateBasic() error {
 		return errors.New("self-transfers are disallowed (sender equals recipient)")
 	}
 
-	// [P2-2] SigAlg validation: strictly ML-DSA-65 (0x01)
+	// [P2-2] SigAlg validation: ML-DSA-65 (0x01), or ML-DSA-65 multisig (0x02) where enabled
+	if tx.SigAlg == SigAlgMultisigMLDSA65 {
+		return tx.validateMultisigBasic()
+	}
 	if tx.SigAlg != pqsig.SigAlgMLDSA65 {
 		return fmt.Errorf("unsupported signature algorithm: 0x%02x (expected ML-DSA-65 0x01)", tx.SigAlg)
 	}

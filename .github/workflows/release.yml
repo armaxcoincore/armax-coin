@@ -94,6 +94,15 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Go Format Check
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
       - name: Go Vet
         run: go vet -tags testhooks ./...
 
@@ -186,6 +195,7 @@ jobs:
           go build -trimpath -ldflags="-s -w -buildid=" -o release_dist/armminer$EXT ./miner
           go build -trimpath -ldflags="-s -w -buildid=" -o release_dist/armsend$EXT ./cli/armsend
           go build -trimpath -ldflags="-s -w -buildid=" -o release_dist/armwallet$EXT ./cli/armwallet
+          go build -trimpath -ldflags="-s -w -buildid=" -o release_dist/armreconcile$EXT ./cli/armreconcile
 
           # Build armgui desktop wallet (Embedded WebView2 Desktop GUI on Windows, Web Desktop GUI on Linux/macOS)
           if [ "${{ matrix.os }}" = "windows" ] && [ "${{ matrix.arch }}" = "amd64" ]; then
@@ -201,6 +211,7 @@ jobs:
           test -f "release_dist/armminer$EXT" || (echo "Error: armminer$EXT was not built" && exit 1)
           test -f "release_dist/armsend$EXT" || (echo "Error: armsend$EXT was not built" && exit 1)
           test -f "release_dist/armwallet$EXT" || (echo "Error: armwallet$EXT was not built" && exit 1)
+          test -f "release_dist/armreconcile$EXT" || (echo "Error: armreconcile$EXT was not built" && exit 1)
           test -f "release_dist/armgui$EXT" || (echo "Error: armgui$EXT was not built" && exit 1)
 
       - name: Sign Windows Executables (Authenticode + RFC 3161 Timestamp)

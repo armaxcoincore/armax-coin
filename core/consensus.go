@@ -200,15 +200,8 @@ func validateBlockContext(b *Block, prev *Block, chainHistory []Block, isHistori
 	for idx := range b.Transactions {
 		var txSize int
 		if useAltProfile {
-			if altProf.BlockBinarySizeActivationHeight >= 0 && int64(b.Index) >= altProf.BlockBinarySizeActivationHeight {
-				if binSz := b.Transactions[idx].BinarySize(); binSz > 0 {
-					txSize = binSz
-				} else {
-					txSize = b.Transactions[idx].Size()
-				}
-			} else {
-				txSize = b.Transactions[idx].Size()
-			}
+			altBinary := altProf.BlockBinarySizeActivationHeight >= 0 && int64(b.Index) >= altProf.BlockBinarySizeActivationHeight
+			txSize = effectiveTxSize(&b.Transactions[idx], altBinary)
 		} else {
 			txSize = EffectiveTxSize(&b.Transactions[idx], b.Index)
 		}
@@ -222,8 +215,9 @@ func validateBlockContext(b *Block, prev *Block, chainHistory []Block, isHistori
 		return fmt.Errorf("invalid tx count (%d)", len(b.Transactions))
 	}
 
-	// [C-26] Block.Miner must pass ValidateAddress and match coinbase recipient
-	if !ValidateAddress(b.Miner) {
+	// [C-26] Block.Miner must be a valid address of the chain's own network (resolved from its
+	// Genesis, not the global profile) and match the coinbase recipient.
+	if !ValidateAddressForNetwork(b.Miner, chainNetID) {
 		return fmt.Errorf("block #%d invalid miner address '%s'", b.Index, b.Miner)
 	}
 	coinbaseRecipient := b.Transactions[0].Recipient

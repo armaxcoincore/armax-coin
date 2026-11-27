@@ -50,6 +50,7 @@ $armminer = Join-Path $BinDir "armminer$ext"
 $armsend = Join-Path $BinDir "armsend$ext"
 $armwallet = Join-Path $BinDir "armwallet$ext"
 $armgui = Join-Path $BinDir "armgui$ext"
+$armreconcile = Join-Path $BinDir "armreconcile$ext"
 
 # If binaries are not pre-built in BinDir, build them now
 if (-not (Test-Path $armcoind)) {
@@ -58,6 +59,7 @@ if (-not (Test-Path $armcoind)) {
     go build -trimpath -ldflags="-s -w -buildid=" -o $armminer ./miner
     go build -trimpath -ldflags="-s -w -buildid=" -o $armsend ./cli/armsend
     go build -trimpath -ldflags="-s -w -buildid=" -o $armwallet ./cli/armwallet
+    go build -trimpath -ldflags="-s -w -buildid=" -o $armreconcile ./cli/armreconcile
     if (Test-Path "gui") {
         go build -trimpath -ldflags="-s -w -H windowsgui -buildid=" -o $armgui ./gui
     }
@@ -90,7 +92,7 @@ if (Test-Path $checksumFile) {
 
 # 2. Verify '<bin> -version' across CLI binaries and check GUI binary presence
 Write-Host "[+] Verifying -version output across CLI binaries..." -ForegroundColor Green
-$binsToTest = @($armcoind, $armminer, $armsend, $armwallet)
+$binsToTest = @($armcoind, $armminer, $armsend, $armwallet, $armreconcile)
 
 foreach ($b in $binsToTest) {
     $bName = Split-Path $b -Leaf

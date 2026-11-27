@@ -6,6 +6,7 @@ BINARY_MINER=$(BIN_DIR)/armminer
 BINARY_SEND=$(BIN_DIR)/armsend
 BINARY_WALLET=$(BIN_DIR)/armwallet
 BINARY_GUI=$(BIN_DIR)/armgui
+BINARY_RECONCILE=$(BIN_DIR)/armreconcile
 
 all: build
 
@@ -17,6 +18,7 @@ build:
 	go build -ldflags="-s -w" -o $(BINARY_SEND) ./cli/armsend
 	go build -ldflags="-s -w" -o $(BINARY_WALLET) ./cli/armwallet
 	go build -ldflags="-s -w" -o $(BINARY_GUI) ./gui
+	go build -ldflags="-s -w" -o $(BINARY_RECONCILE) ./cli/armreconcile
 	@echo "Binaries built successfully."
 
 run:
@@ -32,4 +34,4 @@ vet:
 	go vet ./...
 
 clean:
-	rm -rf $(BIN_DIR) armcoind armminer armsend armwallet armgui *.exe blockchain.db.tmp
+	rm -rf $(BIN_DIR) armcoind armminer armsend armwallet armgui armreconcile *.exe blockchain.db.tmp

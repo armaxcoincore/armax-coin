@@ -18,9 +18,15 @@ Armaxcoin is built from the ground up for the post-quantum era. All user transac
   Implemented using the official Go standard library package `crypto/mldsa` introduced in Go 1.27+.
 - **Address Encoding:**
   Public keys are hashed and formatted as human-readable Bech32 addresses with the human-readable prefix:
-  - Testnet: `armx1...`
-  - Mainnet: `armx1...`
-  - Network profile separation prevents cross-network transaction replay.
+  - Mainnet: `ax1...`
+  - Testnet: `armx1...` (unchanged; bound into Testnet transaction hashes and Genesis)
+  - Regtest: `axrt1...`
+  - Soak: `axsk1...`
+  - Each node and wallet accepts only its own network's prefix, so an address from another network is rejected before signing or validation. Transaction hashes also commit to the Network ID, which prevents cross-network transaction replay.
+- **M-of-N Multisig Custody (`sig_alg` `0x02`):**
+  Mainnet and Regtest accept ML-DSA-65 multisig spends from block `#1` (`2 <= M <= 3`, `M <= N <= 4`). Testnet and Soak reject them. The account address is `SHA-256(0x02 || descriptor)`, and spends are always sized in `TxBinaryV1`. See [ML-DSA-65 Multisig Custody](architecture/consensus/mldsa65-multisig-custody.md).
+- **Mainnet Treasury Subsidy Split:**
+  On Mainnet, blocks `#1..#108,000` carry a second protocol coinbase, `tx[1]` (`TREASURY_REWARD_SIG`). It pays exactly 20% of the subsidy (`12 ARMX`) to `TreasuryAddress`, and the miner's `tx[0]` gets the remaining `48 ARMX` plus all fees. The split stays inactive while `TreasuryAddress` is empty, and a launch-gate test blocks Mainnet launch until it is published. It is disabled on Testnet and Soak. On Regtest it is off by default and is enabled with `ARMX_TREASURY_SPLIT_END_HEIGHT`, using a public 2-of-3 fixture multisig.
 
 ### 1.2 Hashing Functions
 - **Block Hashing (Testnet, Blocks 0..519):** Double-SHA256 (`SHA-256d`).
@@ -73,7 +79,7 @@ On the public testnet, PoW consensus evolves across three distinct height eras t
 
 ### 2.2 Mainnet Profile (`ARMX-MAINNET-1` — Locked Provisional Staging)
 
-In `core/network.go`, `core.MainnetLaunched` remains strictly `false` (invoking `-network mainnet` fails closed across all binaries). The current `MainnetProfile` preserves immutable **Double-SHA256 (`SHA-256d`)** Genesis `#0` (`GenesisHash = "0820d429..."`) and holds a **provisional pre-launch staging configuration** for isolated `-local-mainnet` dry runs — **it is not a finalized Mainnet launch specification and remains subject to revision prior to official Mainnet launch freeze**:
+In `core/network.go`, `core.MainnetLaunched` remains strictly `false` (invoking `-network mainnet` fails closed across all binaries). The current `MainnetProfile` uses a **Double-SHA256 (`SHA-256d`)** Genesis `#0` (`GenesisHash = "0ffbf057..."`, burn address under the Mainnet `ax` prefix) and holds a **provisional pre-launch staging configuration** for isolated `-local-mainnet` dry runs — **it is not a finalized Mainnet launch specification and remains subject to revision prior to official Mainnet launch freeze**:
 - **Proof-of-Work (Provisional):** `ArmaxHashActivationHeight = -1`, `ArmaxHashV2ActivationHeight = 1` (**ArmaxHash v2 Stream-Fast**, chained BLAKE2b-512 + BLAKE2b-256, with Difficulty 5 bootstrap limit `ArmaxHashPowLimitHex = "00000fff..."`).
 - **Difficulty Adjustment (Provisional):** `ASERTActivationHeight = 0` (**Armax-ASERT-AW**, anchored to Genesis `#0` at `ArmaxHashPowLimitHex`), `AntiStallActivationHeight = -1` (TEDR disabled).
 - **Timestamps & Block Sizing (Provisional):** `TimestampRulesActivationHeight = 0` (C1/C2 MTP-55 non-decreasing), `FutureTimestampLimitActivationHeight = 0` (C6 10-minute `+600s` limit), and `BlockBinarySizeActivationHeight = 0` (`TxBinaryV1` binary block/tx size accounting from Genesis `#0`).
@@ -213,7 +219,17 @@ Instead of private mining, the following transparent launch procedure is strongl
 
 ## 7. P2P Wire Protocol & Handshake Flow
 
-1. **Transport Layer:** Traffic is encrypted with TLS 1.3 using a persistent, self-signed ECDSA P-256 node identity stored in `p2ptls.pem`. TOFU pins the remote certificate public-key fingerprint after first contact; identity is not verified through a PKI/CA, so the initial contact remains vulnerable to an active man-in-the-middle unless fingerprints are distributed out-of-band.
+1. **Transport Layer:** Traffic is encrypted with TLS 1.3. On Mainnet, key exchange is restricted to the hybrid post-quantum groups `X25519MLKEM768` and `SecP256r1MLKEM768`.
+   - A Mainnet peer that offers no ML-KEM group (for example `GODEBUG=tlsmlkem=0`) cannot complete the handshake.
+   - Testnet, Regtest and Soak keep Go's default key exchanges, which already prefer `X25519MLKEM768` (as `v1.0.12` does), so running Testnet peers see no behaviour change.
+   - The KEM restriction applies only inside a TLS session. Unless `RequireTLS` or `P2PTOFU` is enabled, a failed handshake can still fall back to plaintext, so this is not full downgrade protection.
+   - Each node has a persistent, self-signed identity stored in `p2ptls.pem`:
+     - New Mainnet identities use ML-DSA-65 (TLS scheme `0x0905`).
+     - Testnet identities stay ECDSA P-256, so existing TOFU pins keep matching. `ARMX_P2P_MLDSA_IDENTITY=1` opts a new identity into ML-DSA-65.
+     - Existing identity files are never rotated automatically.
+   - Before any TLS work, inbound connection attempts are limited per IP (burst 30, refill 5/s). Exhausting the limit refuses the connection without adding ban score.
+
+   TOFU pins the remote certificate public-key fingerprint after first contact; identity is not verified through a PKI/CA, so the initial contact remains vulnerable to an active man-in-the-middle unless fingerprints are distributed out-of-band.
 2. **Handshake:**
     - Peers establish TLS 1.3 before exchanging application messages.
     - With TOFU enabled, the remote certificate public-key fingerprint is checked against the persisted peer store. A mismatch or pin persistence failure terminates the connection.

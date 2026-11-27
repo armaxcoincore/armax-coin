@@ -73,8 +73,10 @@ To prevent conflation between speculative design iterations and production-ready
 
 - **[`../governance/TREASURY_MIGRATION_PLAN.md`](../governance/TREASURY_MIGRATION_PLAN.md):** Preliminary (non-final `v1.3`) two-stage open-launch & `1,296,000 ARMX` (`108,000`-block / `~150`-day `80%/20%` subsidy split) conservative treasury, staged testnet miner migration, and conditional reserve framework (subject to ongoing evaluation and separate Founder approval).
 - **[`tokenomics/mining-accumulation-plan.md`](tokenomics/mining-accumulation-plan.md):** Preliminary (non-final) two-stage open-launch `80% / 20%` block subsidy split draft (staging first -> public Mainnet from Block `#1`, `48/12 ARMX` across `#1..#108,000`).
+- **[`tokenomics/migration-reconciler.md`](tokenomics/migration-reconciler.md):** Offline `armreconcile` toolkit — signed pool ledgers, ML-DSA-65 migration claims, final-snapshot manifest, and staged treasury tranches.
 - **[`consensus/mainnet-pow-activation.md`](consensus/mainnet-pow-activation.md):** Proposal and analysis for future Mainnet PoW activation.
 - **[`consensus/mainnet-treasury-subsidy-split.md`](consensus/mainnet-treasury-subsidy-split.md):** Dual-coinbase `tx[0]`/`tx[1]` consensus contract for the Mainnet `80%/20%` subsidy split (implemented, inactive until the Treasury address is published), supply accounting, mining interfaces, and per-network address prefixes.
+- **[`consensus/mldsa65-multisig-custody.md`](consensus/mldsa65-multisig-custody.md):** ML-DSA-65 M-of-N multisig custody (`sig_alg` `0x02`): descriptor, witness, activation, and the air-gapped `armwallet multisig` flow.
 - **[`../CONSENSUS_AND_NETWORK.md`](../CONSENSUS_AND_NETWORK.md):** Canonical Layer-1 mathematical consensus specification.
 - **[`../NODE_OPERATIONS.md`](../NODE_OPERATIONS.md):** Operational guidance for running Testnet nodes.
 - **[`../releases/v1.0.12.md`](../releases/v1.0.12.md):** Release notes for Core v1.0.12 (Desktop GUI v2 `"Waiting for Sync"`, WebView2, System Tray, Node Sync Gate `HTTP 503`, integrated CPU multi-thread optimization, Stratum TLS, additive Node RPC, and Go `1.27.4`).

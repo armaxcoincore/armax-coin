@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/ecdsa"
-	"crypto/elliptic"
+	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
@@ -106,7 +106,7 @@ func loadOrGenerateNodeTLSCertificate(dataDir ...string) (tls.Certificate, error
 		return tls.Certificate{}, fmt.Errorf("failed to read P2P TLS identity %s: %w", tlsPath, err)
 	}
 
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	priv, err := newNodeIdentityKey()
 	if err != nil {
 		return tls.Certificate{}, err
 	}
@@ -131,17 +131,31 @@ func loadOrGenerateNodeTLSCertificate(dataDir ...string) (tls.Certificate, error
 		BasicConstraintsValid: true,
 	}
 
-	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if _, isMLDSA := priv.(*mldsa.PrivateKey); isMLDSA {
+		// ML-DSA keys sign only; there is no key-encipherment use.
+		template.KeyUsage = x509.KeyUsageDigitalSignature
+	}
+	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, priv.Public(), priv)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
 
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
-	keyBytes, err := x509.MarshalECPrivateKey(priv)
-	if err != nil {
-		return tls.Certificate{}, err
+	var keyPEM []byte
+	if ecKey, ok := priv.(*ecdsa.PrivateKey); ok {
+		// Keep the SEC 1 encoding for P-256 so identities stay byte-compatible with v1.0.12.
+		keyBytes, err := x509.MarshalECPrivateKey(ecKey)
+		if err != nil {
+			return tls.Certificate{}, err
+		}
+		keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes})
+	} else {
+		keyBytes, err := x509.MarshalPKCS8PrivateKey(priv)
+		if err != nil {
+			return tls.Certificate{}, err
+		}
+		keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyBytes})
 	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes})
 
 	combined := append(certPEM, keyPEM...)
 	tlsDir := filepath.Dir(tlsPath)
@@ -205,9 +219,10 @@ func InitNodeIdentity(dataDir ...string) (*tls.Config, [32]byte, error) {
 		return nil, [32]byte{}, err
 	}
 	nodeTLSConfig = &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS13,
-		ClientAuth:   tls.RequestClientCert,
+		Certificates:     []tls.Certificate{cert},
+		MinVersion:       tls.VersionTLS13,
+		ClientAuth:       tls.RequestClientCert,
+		CurvePreferences: P2PCurvePreferences(core.GetActiveNetwork().IsMainnet),
 	}
 
 	var fp [32]byte
@@ -236,6 +251,8 @@ func init() {
 		// VerifyConnection enforces fail-closed certificate and SPKI presence during the TLS 1.3 handshake.
 		InsecureSkipVerify: true,
 		MinVersion:         tls.VersionTLS13,
+		// CurvePreferences are set per dial from the target network (see P2PCurvePreferences);
+		// this init runs before the network profile is chosen.
 		VerifyConnection: func(cs tls.ConnectionState) error {
 			if len(cs.PeerCertificates) == 0 || len(cs.PeerCertificates[0].RawSubjectPublicKeyInfo) == 0 {
 				return fmt.Errorf("p2p tls: peer presented no valid certificate SPKI")
@@ -407,6 +424,7 @@ func dialEncryptedWithFallbackForNetwork(netID string, addr string, timeout time
 	var tlsConf *tls.Config
 	if clientTLSConf != nil {
 		tlsConf = clientTLSConf.Clone()
+		tlsConf.CurvePreferences = P2PCurvePreferences(isMainnet)
 		if clientIdentity != nil {
 			tlsConf.Certificates = []tls.Certificate{*clientIdentity}
 		}

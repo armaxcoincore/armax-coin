@@ -52,7 +52,7 @@ func TestL1_1_NetworkLifecycle(t *testing.T) {
 			core.SetTargetOverrideForTesting(core.DifficultyToTarget(1))
 			defer core.SetTargetOverrideForTesting(nil)
 
-			miner := core.GenesisMiner
+			miner := core.GenesisMinerForNetwork("")
 
 			// Mine 5 blocks
 			for i := 1; i <= 5; i++ {

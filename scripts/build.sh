@@ -25,6 +25,9 @@ go build -trimpath -ldflags="-s -w -buildid=" -o bin/armwallet ./cli/armwallet
 echo "[+] Compiling Desktop GUI Wallet (bin/armgui)..."
 go build -trimpath -ldflags="-s -w -buildid=" -o bin/armgui ./gui
 
+echo "[+] Compiling Migration Reconciler CLI (bin/armreconcile)..."
+go build -trimpath -ldflags="-s -w -buildid=" -o bin/armreconcile ./cli/armreconcile
+
 echo "=================================================="
 echo "[OK] ALL BINARIES SUCCESSFULLY COMPILED into bin/!"
 echo "    - bin/armcoind   : Daemon Node, P2P Engine & Web Server"
@@ -32,4 +35,5 @@ echo "    - bin/armminer   : PoW Miner Client"
 echo "    - bin/armsend    : CLI Transaction Sender Tool"
 echo "    - bin/armwallet  : CLI Wallet Manager Tool"
 echo "    - bin/armgui     : Embedded WebView2 / Web Desktop GUI Wallet"
+echo "    - bin/armreconcile : Offline Testnet-to-Mainnet Migration Reconciler"
 echo "=================================================="

@@ -68,6 +68,21 @@ type NetworkProfile struct {
 	// switch from legacy JSON Size() to compact TxBinaryV1 BinarySize(). Negative disables it.
 	MempoolBinaryFeeActivationHeight int64          `json:"mempool_binary_fee_activation_height"`
 	Checkpoints                      map[int]string `json:"checkpoints,omitempty"`
+	// AddressHRP is the Bech32 human-readable prefix accepted for addresses on this network.
+	// A distinct prefix per network lets wallets and nodes reject cross-network addresses
+	// before signing. Testnet keeps "armx" because existing Testnet addresses are bound into
+	// its transaction hashes and Genesis.
+	AddressHRP string `json:"address_hrp,omitempty"`
+	// MultisigActivationHeight is the first block height that accepts ML-DSA-65 M-of-N multisig
+	// spends (SigAlg 0x02). Zero or negative disables them, so a profile that omits the field
+	// fails closed. Genesis #0 carries no user transactions, so 1 means "from launch".
+	MultisigActivationHeight int64 `json:"multisig_activation_height,omitempty"`
+	// TreasurySplitEndHeight is the last block height of the 80/20 dual-coinbase subsidy split
+	// (blocks #1..end). Zero or negative disables it.
+	TreasurySplitEndHeight int64 `json:"treasury_split_end_height,omitempty"`
+	// TreasuryAddress receives the tx[1] treasury coinbase while the split is active. The split
+	// stays inactive while it is empty, so no block can pay an unpublished address.
+	TreasuryAddress string `json:"treasury_address,omitempty"`
 }
 
 var (
@@ -96,6 +111,12 @@ var (
 		Checkpoints: map[int]string{
 			0: GenesisHash,
 		},
+		AddressHRP:               MainnetAddressHRP,
+		MultisigActivationHeight: 1, // Treasury custody multisig from the first spendable block
+		TreasurySplitEndHeight:   108000,
+		// TreasuryAddress is intentionally empty until the Founder publishes the Mainnet M-of-N
+		// treasury multisig; TestTreasurySplit_ProfilesAndLaunchGate blocks launch without it.
+		TreasuryAddress: "",
 		DefaultSeeds: []string{
 			"id.armax-coin.cloud:" + MainnetP2PPort,
 			"armax-coin.cloud:" + MainnetP2PPort,
@@ -131,6 +152,8 @@ var (
 		Checkpoints: map[int]string{
 			0: TestnetGenesisHash,
 		},
+		AddressHRP:               TestnetAddressHRP,
+		MultisigActivationHeight: -1, // Not deployed on Testnet: v1.0.12 nodes cannot parse SigAlg 0x02
 		DefaultSeeds: []string{
 			"testnet-seed1.armax-coin.cloud:" + TestnetP2PPort,
 			"testnet-seed2.armax-coin.cloud:" + TestnetP2PPort,
@@ -151,6 +174,8 @@ var (
 		ArmaxHashActivationHeight:   -1,
 		ArmaxHashV2ActivationHeight: -1,
 		DefaultSeeds:                []string{},
+		AddressHRP:                  SoakAddressHRP,
+		MultisigActivationHeight:    -1,
 
 		TimestampRulesActivationHeight:       -1,
 		FutureTimestampLimitActivationHeight: -1,
@@ -175,6 +200,10 @@ var (
 		ArmaxHashActivationHeight:   -1,
 		ArmaxHashV2ActivationHeight: -1,
 		DefaultSeeds:                []string{},
+		AddressHRP:                  RegtestAddressHRP,
+		MultisigActivationHeight:    1,
+		TreasuryAddress:             RegtestTreasuryAddress,
+		TreasurySplitEndHeight:      -1, // Enabled per run: ARMX_TREASURY_SPLIT_END_HEIGHT or SetTreasurySplitEndHeight
 
 		TimestampRulesActivationHeight:       -1,
 		FutureTimestampLimitActivationHeight: -1,
@@ -190,21 +219,21 @@ var (
 const MainnetLaunched = false
 
 var (
-	netMu                                   sync.RWMutex
-	ActiveNetwork                           = TestnetProfile // [L4-1] Testnet is default network profile
-	networkInitialized                      bool
-	allowNetworkResetHook                   func() bool
-	allowMainnetInTestsHook                 func() bool
-	networkIDOverrideHook                   func() string
-	armaxHashActivationHeightOverride       *int64 // nil means use network profile or env
-	armaxHashV2ActivationHeightOverride     *int64 // nil means use network profile or env
-	timestampRulesHeightOverride            *int64 // nil means use network profile
-	futureLimitHeightOverride               *int64 // nil means use network profile
-	antiStallActivationHeightOverride       *int64 // nil means use network profile
-	asertActivationHeightOverride           *int64 // nil means use network profile
-	blockBinarySizeActivationHeightOverride *int64 // nil means use network profile
+	netMu                                    sync.RWMutex
+	ActiveNetwork                            = TestnetProfile // [L4-1] Testnet is default network profile
+	networkInitialized                       bool
+	allowNetworkResetHook                    func() bool
+	allowMainnetInTestsHook                  func() bool
+	networkIDOverrideHook                    func() string
+	armaxHashActivationHeightOverride        *int64 // nil means use network profile or env
+	armaxHashV2ActivationHeightOverride      *int64 // nil means use network profile or env
+	timestampRulesHeightOverride             *int64 // nil means use network profile
+	futureLimitHeightOverride                *int64 // nil means use network profile
+	antiStallActivationHeightOverride        *int64 // nil means use network profile
+	asertActivationHeightOverride            *int64 // nil means use network profile
+	blockBinarySizeActivationHeightOverride  *int64 // nil means use network profile
 	mempoolBinaryFeeActivationHeightOverride *int64 // nil means use network profile
-	testGlobalNetworkLock                   sync.Mutex
+	testGlobalNetworkLock                    sync.Mutex
 
 	localMainnetMu      sync.RWMutex
 	localMainnetEnabled bool

@@ -617,8 +617,9 @@ func TestMainnetRemainLocked_WithGenesisASERTAndBinaryReady(t *testing.T) {
 	}
 
 	// Verify validateBlockContext rejects a Block #1 whose hash is forged with legacy SHA-256d
-	cb := Transaction{Sender: "SYSTEM", Recipient: GenesisMiner, Amount: InitialReward, Nonce: 1, Signature: "REWARD_SIG"}
-	forged := NewBlock([]Transaction{cb}, gen.Hash, 1, GenesisMiner, tgt1)
+	mainnetMiner := GenesisMinerForNetwork("ARMX-MAINNET-1")
+	cb := Transaction{Sender: "SYSTEM", Recipient: mainnetMiner, Amount: InitialReward, Nonce: 1, Signature: "REWARD_SIG"}
+	forged := NewBlock([]Transaction{cb}, gen.Hash, 1, mainnetMiner, tgt1)
 	forged.Timestamp = gen.Timestamp + 120
 	forged.Hash = forged.CalculateSha256dHash()
 	if err := validateBlockContext(forged, &gen, []Block{gen}, true); err == nil || !strings.Contains(err.Error(), "calculated hash mismatch") {

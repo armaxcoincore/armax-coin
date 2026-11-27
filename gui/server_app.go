@@ -2342,6 +2342,11 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 
 	to := strings.TrimSpace(req.To)
 	if !core.ValidateAddress(to) {
+		if netID, ok := core.NetworkIDForAddress(to); ok {
+			http.Error(w, fmt.Sprintf("Rejected before signing: recipient is a %s address; this wallet is on %s (expected %s1...)",
+				netID, core.ActiveNetwork.NetworkID, core.ActiveAddressHRP()), http.StatusBadRequest)
+			return
+		}
 		http.Error(w, "Invalid recipient Bech32 address", http.StatusBadRequest)
 		return
 	}
@@ -2406,6 +2411,13 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Wallet passphrase is required to sign transactions", http.StatusUnauthorized)
 			return
 		}
+	}
+
+	// The signing wallet must belong to the active network too; never sign with a foreign-network key.
+	if !core.ValidateAddress(signingWallet.Address) {
+		http.Error(w, fmt.Sprintf("Rejected before signing: active wallet is not a %s wallet (expected %s1...)",
+			core.ActiveNetwork.NetworkID, core.ActiveAddressHRP()), http.StatusBadRequest)
+		return
 	}
 
 	nextH := currentNextBlockHeightForFee()
@@ -3172,6 +3184,8 @@ func handleWebUI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	ticker := core.TickerForNetworkID(core.ActiveNetwork.NetworkID)
 	html := strings.ReplaceAll(webUIHTML, "{{TICKER}}", ticker)
+	html = strings.ReplaceAll(html, "{{ADDR_PREFIX}}", core.ActiveAddressHRP()+"1")
+	html = strings.ReplaceAll(html, "{{NETWORK_LABEL}}", strings.ToUpper(core.ActiveNetwork.Name))
 	html = strings.ReplaceAll(html, "{{SESSION_TOKEN}}", token)
 	_, _ = w.Write([]byte(html))
 }

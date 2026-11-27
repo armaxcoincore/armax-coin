@@ -83,6 +83,26 @@ type StateManager struct {
 	Lock             sync.RWMutex            `json:"-"`
 	Accounts         map[string]AccountState `json:"accounts"`          // Key: canonical 40-character lowercase hex address
 	CoinbaseMaturity int                     `json:"coinbase_maturity"` // Maturity threshold for coinbase rewards [L4-10-a]
+	// addressNetID pins address prefix validation to one network. Empty means the active network.
+	// Whole-chain replays (IsChainValid) set it from the chain's Genesis so a chain of another
+	// network validates against its own address prefix, not the global profile.
+	addressNetID string
+}
+
+// addressHex converts an address to its canonical hex payload under this ledger's address network.
+func (sm *StateManager) addressHex(addr string) (string, error) {
+	if sm.addressNetID == "" {
+		return AddressToHexCached(addr)
+	}
+	return AddressToHexForNetwork(addr, sm.addressNetID)
+}
+
+// validAddress reports whether addr is a valid address of this ledger's address network.
+func (sm *StateManager) validAddress(addr string) bool {
+	if sm.addressNetID == "" {
+		return ValidateAddress(addr)
+	}
+	return ValidateAddressForNetwork(addr, sm.addressNetID)
 }
 
 // NewStateManager initializes a fresh, empty state ledger
@@ -101,6 +121,7 @@ func (sm *StateManager) Clone() *StateManager {
 	clone := &StateManager{
 		Accounts:         make(map[string]AccountState, len(sm.Accounts)),
 		CoinbaseMaturity: sm.CoinbaseMaturity,
+		addressNetID:     sm.addressNetID,
 	}
 	for k, v := range sm.Accounts {
 		clone.Accounts[k] = cloneAccountState(v)
@@ -199,9 +220,16 @@ func (sm *StateManager) VerifyAndApplyBlock(b *Block, allowedBlockReward int64, 
 		return orig
 	}
 
-	// 1. First pass: Sum user fees and validate regular transactions (idx >= 1)
+	// While the treasury split is active, tx[1] is the treasury coinbase and user transactions
+	// start at index 2; otherwise any SYSTEM transaction at index >= 1 is rejected below.
+	firstUserTx := FirstUserTxIndex(b.Index)
+	if len(b.Transactions) < firstUserTx {
+		return fmt.Errorf("block #%d is missing the tx[1] treasury coinbase", b.Index)
+	}
+
+	// 1. First pass: Sum user fees and validate regular transactions (idx >= firstUserTx)
 	var totalFees int64 = 0
-	for idx := 1; idx < len(b.Transactions); idx++ {
+	for idx := firstUserTx; idx < len(b.Transactions); idx++ {
 		tx := b.Transactions[idx]
 
 		// Consensus Rule: Only tx[0] is permitted to have Sender == "SYSTEM"
@@ -225,12 +253,12 @@ func (sm *StateManager) VerifyAndApplyBlock(b *Block, allowedBlockReward int64, 
 			return fmt.Errorf("block #%d tx #%d totalCost arithmetic overflow", b.Index, idx)
 		}
 
-		senderHex, err := AddressToHexCached(tx.Sender)
+		senderHex, err := sm.addressHex(tx.Sender)
 		if err != nil {
 			return fmt.Errorf("block #%d tx #%d invalid sender address format: %v", b.Index, idx, err)
 		}
 
-		recipHex, err := AddressToHexCached(tx.Recipient)
+		recipHex, err := sm.addressHex(tx.Recipient)
 		if err != nil {
 			return fmt.Errorf("block #%d tx #%d invalid recipient address format: %v", b.Index, idx, err)
 		}
@@ -240,6 +268,9 @@ func (sm *StateManager) VerifyAndApplyBlock(b *Block, allowedBlockReward int64, 
 			return fmt.Errorf("block #%d tx #%d self-transfer rejected (sender cannot be recipient)", b.Index, idx)
 		}
 
+		if err := checkMultisigActivation(&tx, b.Index); err != nil {
+			return fmt.Errorf("block #%d tx #%d %v", b.Index, idx, err)
+		}
 		if !tx.Verify() {
 			return fmt.Errorf("block #%d tx #%d cryptographic signature verification failed", b.Index, idx)
 		}
@@ -323,7 +354,11 @@ func (sm *StateManager) VerifyAndApplyBlock(b *Block, allowedBlockReward int64, 
 	if allowedBlockReward < 0 || allowedBlockReward > math.MaxInt64-totalFees {
 		return fmt.Errorf("block #%d coinbase reward arithmetic overflow", b.Index)
 	}
-	maxAllowedCoinbase := allowedBlockReward + totalFees
+	var treasuryShare int64
+	if firstUserTx == 2 {
+		treasuryShare = TreasuryShare(allowedBlockReward)
+	}
+	maxAllowedCoinbase := allowedBlockReward - treasuryShare + totalFees
 	if coinbaseTx.Amount > maxAllowedCoinbase {
 		return fmt.Errorf("block #%d coinbase reward %d exceeds maximum allowed %d (reward %d + fees %d)",
 			b.Index, coinbaseTx.Amount, maxAllowedCoinbase, allowedBlockReward, totalFees)
@@ -332,11 +367,11 @@ func (sm *StateManager) VerifyAndApplyBlock(b *Block, allowedBlockReward int64, 
 	if strings.EqualFold(coinbaseTx.Recipient, "SYSTEM") {
 		return fmt.Errorf("block #%d coinbase recipient cannot be SYSTEM", b.Index)
 	}
-	if !ValidateAddress(coinbaseTx.Recipient) {
+	if !sm.validAddress(coinbaseTx.Recipient) {
 		return fmt.Errorf("block #%d invalid coinbase recipient address: %s", b.Index, coinbaseTx.Recipient)
 	}
 
-	minerHex, err := AddressToHexCached(coinbaseTx.Recipient)
+	minerHex, err := sm.addressHex(coinbaseTx.Recipient)
 	if err != nil {
 		return fmt.Errorf("block #%d invalid miner coinbase recipient address: %v", b.Index, err)
 	}
@@ -354,6 +389,28 @@ func (sm *StateManager) VerifyAndApplyBlock(b *Block, allowedBlockReward int64, 
 	}
 	minerAcc = minerAcc.PruneMatured(b.Index, maturity)
 	deltaAccounts[minerHex] = minerAcc
+
+	// 3. Treasury coinbase (tx[1]) while the split is active: exact share, immature like tx[0].
+	if firstUserTx == 2 {
+		treasuryTx := b.Transactions[1]
+		if err := validateTreasuryCoinbase(&treasuryTx, b.Index, allowedBlockReward, sm.validAddress); err != nil {
+			return err
+		}
+		treasuryHex, err := sm.addressHex(treasuryTx.Recipient)
+		if err != nil {
+			return fmt.Errorf("block #%d invalid treasury coinbase recipient: %v", b.Index, err)
+		}
+		treasuryAcc := getAccount(treasuryHex)
+		if treasuryAcc.Balance > MaxSupply-treasuryTx.Amount {
+			return fmt.Errorf("block #%d treasury balance exceeds MaxSupply", b.Index)
+		}
+		treasuryAcc.Balance += treasuryTx.Amount
+		if maturity > 0 && treasuryTx.Amount > 0 {
+			treasuryAcc.Immature = append(treasuryAcc.Immature, ImmatureReward{Amount: treasuryTx.Amount, Height: b.Index})
+		}
+		treasuryAcc = treasuryAcc.PruneMatured(b.Index, maturity)
+		deltaAccounts[treasuryHex] = treasuryAcc
+	}
 
 	// Commit state updates atomically into authoritative ledger
 	for addrHex, updatedAcc := range deltaAccounts {

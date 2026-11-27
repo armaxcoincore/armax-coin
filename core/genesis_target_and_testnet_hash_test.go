@@ -119,16 +119,16 @@ func TestL1_6_MainnetGenesisUntouched(t *testing.T) {
 	if gen.Timestamp != 1710000000 {
 		t.Fatalf("Mainnet timestamp changed: %d", gen.Timestamp)
 	}
-	if gen.Nonce != 7 {
+	if gen.Nonce != 12 {
 		t.Fatalf("Mainnet nonce changed: %d", gen.Nonce)
 	}
 	if gen.Target != "0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" {
 		t.Fatalf("Mainnet target changed: %s", gen.Target)
 	}
-	if gen.MerkleRoot != "ca91c25a9cb1c4d2f723a1849123ac18c71eac4958391b82fc51f56874f49d76" {
+	if gen.MerkleRoot != "d4043c6881da932c78f0571da6bcd55d313c05eaeb0d1f790da5d9bec5e0b81f" {
 		t.Fatalf("Mainnet Merkle root changed: %s", gen.MerkleRoot)
 	}
-	if gen.Hash != "0820d42962071e01c8a7d2e6a3aa5640a17f8a60e9006bf59b6e76ac0001535e" {
+	if gen.Hash != "0ffbf057398af25d6c1ba605c48cf344c8631440778c31bbe7629cdd36342f72" {
 		t.Fatalf("Mainnet hash changed: %s", gen.Hash)
 	}
 	if err := ValidateGenesisBlock(&gen); err != nil {

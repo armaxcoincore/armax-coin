@@ -14,7 +14,7 @@ import (
 
 // TestArmwalletVersionFlag verifies that armwallet CLI responds to -version
 func TestArmwalletVersionFlag(t *testing.T) {
-	cmd := exec.Command("go", "run", "main.go", "-version")
+	cmd := exec.Command("go", "run", ".", "-version")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("armwallet -version failed: %v, output: %s", err, string(out))
@@ -58,7 +58,7 @@ func TestArmwalletRestoreWarning(t *testing.T) {
 	// 24 valid BIP-39 words for test
 	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art"
 
-	cmd := exec.Command("go", "run", "main.go", "-restore", mnemonic, "-file", ksPath)
+	cmd := exec.Command("go", "run", ".", "-restore", mnemonic, "-file", ksPath)
 	cmd.Env = append(os.Environ(), "ARMX_WALLET_PASSPHRASE=testpassword123")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -81,7 +81,7 @@ func TestArmwalletRestoreInteractive(t *testing.T) {
 
 	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art"
 
-	cmd := exec.Command("go", "run", "main.go", "-restore-interactive", "-file", ksPath)
+	cmd := exec.Command("go", "run", ".", "-restore-interactive", "-file", ksPath)
 	cmd.Env = append(os.Environ(), "ARMX_WALLET_PASSPHRASE=testpassword123")
 	cmd.Stdin = strings.NewReader(mnemonic + "\n")
 

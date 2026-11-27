@@ -58,21 +58,33 @@ func TestL1_2_DynamicNetworkID_TxCrossNetworkRejection(t *testing.T) {
 		t.Fatalf("Identical tx data MUST produce different tx.Hash() across networks! got same: %s", hashTestnet)
 	}
 
-	// Step 3: Verify tx signed on testnet is REJECTED in mainnet
+	// Step 3: Verify tx signed on testnet is REJECTED in mainnet. Its armx1 addresses are already
+	// rejected by the Mainnet address prefix check.
 	errVerifyMainnet := txTestnet.VerifyWithError()
 	if errVerifyMainnet == nil {
 		t.Fatalf("Transaction signed on testnet MUST be rejected in mainnet!")
 	}
-	if !strings.Contains(errVerifyMainnet.Error(), "signature verification failed") {
-		t.Fatalf("Expected signature verification failure error, got: %v", errVerifyMainnet)
+
+	// Step 3b: Re-encode the same payloads with the Mainnet prefix but keep the Testnet signature.
+	// The signature must still fail because the transaction hash commits to the Network ID.
+	mainSender, err := PubHexToAddress(acc.PubHex)
+	if err != nil || !strings.HasPrefix(mainSender, MainnetAddressHRP+"1") {
+		t.Fatalf("PubHexToAddress on mainnet = %s, %v", mainSender, err)
+	}
+	replayed := txTestnet
+	replayed.Sender = mainSender
+	replayed.Recipient = MainnetGenesisMiner
+	errReplay := replayed.VerifyWithError()
+	if errReplay == nil || !strings.Contains(errReplay.Error(), "signature verification failed") {
+		t.Fatalf("Expected signature verification failure for re-encoded testnet tx, got: %v", errReplay)
 	}
 
 	// Step 4: Sign on mainnet, verify in mainnet, then switch to testnet and verify rejected
 	txMainnet := Transaction{
 		SigAlg:    1,
-		Sender:    acc.Address,
+		Sender:    mainSender,
 		SenderPub: acc.PubHex,
-		Recipient: "armx1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqplwcdd",
+		Recipient: MainnetGenesisMiner,
 		Amount:    1000000,
 		Fee:       12000,
 		Nonce:     1,
@@ -91,8 +103,15 @@ func TestL1_2_DynamicNetworkID_TxCrossNetworkRejection(t *testing.T) {
 	if errVerifyTestnet == nil {
 		t.Fatalf("Transaction signed on mainnet MUST be rejected in testnet!")
 	}
-	if !strings.Contains(errVerifyTestnet.Error(), "signature verification failed") {
-		t.Fatalf("Expected signature verification failure error, got: %v", errVerifyTestnet)
+
+	// Step 4b: Same check in reverse: Testnet-encoded addresses with the Mainnet signature fail
+	// signature verification on Testnet.
+	reverse := txMainnet
+	reverse.Sender = acc.Address
+	reverse.Recipient = TestnetGenesisMiner
+	errReverse := reverse.VerifyWithError()
+	if errReverse == nil || !strings.Contains(errReverse.Error(), "signature verification failed") {
+		t.Fatalf("Expected signature verification failure for re-encoded mainnet tx, got: %v", errReverse)
 	}
 
 	// Step 5: Test SetNetwork once-only enforcement when SetNetworkForTesting(false)

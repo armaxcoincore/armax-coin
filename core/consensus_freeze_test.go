@@ -114,16 +114,17 @@ func TestConsensusParametersFrozen(t *testing.T) {
 	if mainnetGen.Timestamp != 1710000000 {
 		t.Fatalf("Mainnet Genesis Timestamp mismatch: got %d", mainnetGen.Timestamp)
 	}
-	if mainnetGen.Nonce != 7 {
+	// Frozen after the Mainnet burn address moved to the "ax" prefix (Mainnet not launched).
+	if mainnetGen.Nonce != 12 {
 		t.Fatalf("Mainnet Genesis Nonce mismatch: got %d", mainnetGen.Nonce)
 	}
-	if mainnetGen.Hash != "0820d42962071e01c8a7d2e6a3aa5640a17f8a60e9006bf59b6e76ac0001535e" {
+	if mainnetGen.Hash != "0ffbf057398af25d6c1ba605c48cf344c8631440778c31bbe7629cdd36342f72" {
 		t.Fatalf("Mainnet Genesis Hash mismatch: got %s", mainnetGen.Hash)
 	}
-	if mainnetGen.MerkleRoot != "ca91c25a9cb1c4d2f723a1849123ac18c71eac4958391b82fc51f56874f49d76" {
+	if mainnetGen.MerkleRoot != "d4043c6881da932c78f0571da6bcd55d313c05eaeb0d1f790da5d9bec5e0b81f" {
 		t.Fatalf("Mainnet Genesis MerkleRoot mismatch: got %s", mainnetGen.MerkleRoot)
 	}
-	if mainnetGen.Miner != "armx1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqplwcdd" {
+	if mainnetGen.Miner != "ax1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqyum580" {
 		t.Fatalf("Mainnet Genesis Miner mismatch: got %s", mainnetGen.Miner)
 	}
 	if len(mainnetGen.Transactions) != 1 || mainnetGen.Transactions[0].Amount != InitialReward {
