@@ -473,6 +473,8 @@ type peerRateTracker struct {
 	lastForkpointRefill  time.Time
 	mempoolTokens        float64
 	lastMempoolRefill    time.Time
+	handshakeTokens      float64 // inbound connection attempts, charged before the TLS handshake
+	lastHandshakeRefill  time.Time
 }
 
 func (tr *peerRateTracker) lastActive() time.Time {
@@ -485,6 +487,7 @@ func (tr *peerRateTracker) lastActive() time.Time {
 		tr.lastBlockRangeRefill,
 		tr.lastForkpointRefill,
 		tr.lastMempoolRefill,
+		tr.lastHandshakeRefill,
 	} {
 		if ts.After(latest) {
 			latest = ts
@@ -492,6 +495,14 @@ func (tr *peerRateTracker) lastActive() time.Time {
 	}
 	return latest
 }
+
+const (
+	// inboundHandshakeMsgType is the AllowMessage bucket for inbound connection attempts.
+	inboundHandshakeMsgType = "INBOUND_HANDSHAKE"
+	// inboundHandshakeBurst and inboundHandshakeRefillPerSec bound inbound attempts per IP.
+	inboundHandshakeBurst        = 30.0
+	inboundHandshakeRefillPerSec = 5.0
+)
 
 const (
 	MaxSessionRespBytes      = 16 * 1024 * 1024
@@ -3007,8 +3018,29 @@ func (p *PeerServer) AllowMessage(ip string, msgType string) bool {
 			lastForkpointRefill:  now,
 			mempoolTokens:        6.0,
 			lastMempoolRefill:    now,
+			handshakeTokens:      inboundHandshakeBurst,
+			lastHandshakeRefill:  now,
 		}
 		p.rateTrackers[ip] = tracker
+	}
+
+	// Inbound connection attempts per IP, checked before any TLS work (ML-KEM and signature
+	// operations make the handshake the most expensive step for an unauthenticated peer).
+	// Exhaustion only refuses the connection; it does not add ban score, so NAT'd honest peers
+	// recover as the bucket refills.
+	if msgType == inboundHandshakeMsgType {
+		if elapsed := now.Sub(tracker.lastHandshakeRefill).Seconds(); elapsed > 0 {
+			tracker.handshakeTokens += elapsed * inboundHandshakeRefillPerSec
+			if tracker.handshakeTokens > inboundHandshakeBurst {
+				tracker.handshakeTokens = inboundHandshakeBurst
+			}
+			tracker.lastHandshakeRefill = now
+		}
+		if tracker.handshakeTokens < 1.0 {
+			return false
+		}
+		tracker.handshakeTokens -= 1.0
+		return true
 	}
 
 	// Dedicated token bucket for NEW_BLOCK messages during block sync [T1]
@@ -4400,6 +4432,15 @@ func (p *PeerServer) runCycle(cycle *serverCycle, listener net.Listener) {
 		requireTLS := p.RequireTLS
 		p2pTOFU := p.P2PTOFU
 		p.Lock.RUnlock()
+
+		if host, _, err := net.SplitHostPort(conn.RemoteAddr().String()); err == nil && !p.AllowMessage(host, inboundHandshakeMsgType) {
+			debugLogf("[P2P][CONN] inbound rejected remote=%s reason=handshake-rate", conn.RemoteAddr().String())
+			cycle.connsMu.Lock()
+			delete(cycle.activeConns, conn)
+			cycle.connsMu.Unlock()
+			_ = conn.Close()
+			continue
+		}
 
 		remoteSubnet := extractSubnet(conn.RemoteAddr().String())
 		releaseSlot, rejectMsg, ok := p.tryReserveInboundSlot(remoteSubnet, disableSubnetLimit)
