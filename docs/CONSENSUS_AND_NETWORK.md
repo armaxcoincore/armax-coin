@@ -215,7 +215,17 @@ Instead of private mining, the following transparent launch procedure is strongl
 
 ## 7. P2P Wire Protocol & Handshake Flow
 
-1. **Transport Layer:** Traffic is encrypted with TLS 1.3 using a persistent, self-signed ECDSA P-256 node identity stored in `p2ptls.pem`. TOFU pins the remote certificate public-key fingerprint after first contact; identity is not verified through a PKI/CA, so the initial contact remains vulnerable to an active man-in-the-middle unless fingerprints are distributed out-of-band.
+1. **Transport Layer:** Traffic is encrypted with TLS 1.3. On Mainnet, key exchange is restricted to the hybrid post-quantum groups `X25519MLKEM768` and `SecP256r1MLKEM768`.
+   - A Mainnet peer that offers no ML-KEM group (for example `GODEBUG=tlsmlkem=0`) cannot complete the handshake.
+   - Testnet, Regtest and Soak keep Go's default key exchanges, which already prefer `X25519MLKEM768` (as `v1.0.12` does), so running Testnet peers see no behaviour change.
+   - The KEM restriction applies only inside a TLS session. Unless `RequireTLS` or `P2PTOFU` is enabled, a failed handshake can still fall back to plaintext, so this is not full downgrade protection.
+   - Each node has a persistent, self-signed identity stored in `p2ptls.pem`:
+     - New Mainnet identities use ML-DSA-65 (TLS scheme `0x0905`).
+     - Testnet identities stay ECDSA P-256, so existing TOFU pins keep matching. `ARMX_P2P_MLDSA_IDENTITY=1` opts a new identity into ML-DSA-65.
+     - Existing identity files are never rotated automatically.
+   - Before any TLS work, inbound connection attempts are limited per IP (burst 30, refill 5/s). Exhausting the limit refuses the connection without adding ban score.
+
+   TOFU pins the remote certificate public-key fingerprint after first contact; identity is not verified through a PKI/CA, so the initial contact remains vulnerable to an active man-in-the-middle unless fingerprints are distributed out-of-band.
 2. **Handshake:**
     - Peers establish TLS 1.3 before exchanging application messages.
     - With TOFU enabled, the remote certificate public-key fingerprint is checked against the persisted peer store. A mismatch or pin persistence failure terminates the connection.

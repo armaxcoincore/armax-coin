@@ -473,6 +473,8 @@ type peerRateTracker struct {
 	lastForkpointRefill  time.Time
 	mempoolTokens        float64
 	lastMempoolRefill    time.Time
+	handshakeTokens      float64 // inbound connection attempts, charged before the TLS handshake
+	lastHandshakeRefill  time.Time
 }
 
 func (tr *peerRateTracker) lastActive() time.Time {
@@ -485,12 +487,46 @@ func (tr *peerRateTracker) lastActive() time.Time {
 		tr.lastBlockRangeRefill,
 		tr.lastForkpointRefill,
 		tr.lastMempoolRefill,
+		tr.lastHandshakeRefill,
 	} {
 		if ts.After(latest) {
 			latest = ts
 		}
 	}
 	return latest
+}
+
+const (
+	// inboundHandshakeMsgType is the AllowMessage bucket for inbound connection attempts.
+	inboundHandshakeMsgType = "INBOUND_HANDSHAKE"
+	// inboundHandshakeBurst and inboundHandshakeRefillPerSec bound inbound attempts per subnet.
+	inboundHandshakeBurst        = 30.0
+	inboundHandshakeRefillPerSec = 5.0
+)
+
+// inboundHandshakeKeyPrefix marks rateTrackers entries that hold a subnet's inbound handshake
+// bucket, so they can never collide with a per-IP message tracker.
+const inboundHandshakeKeyPrefix = "handshake-subnet|"
+
+// allowInboundHandshake charges one inbound connection attempt to the remote subnet (/24 IPv4,
+// /48 IPv6, the same grouping as tryReserveInboundSlot) before any TLS work.
+//
+// The bucket is per subnet, not per IP: one tracker per raw TCP connect from a fresh IP let an
+// attacker rotating through IPv6 addresses fill rateTrackers, force a full sweep and sort under
+// banLock on every new connection, and get a fresh burst after each eviction. Whitelisted hosts
+// and disabled rate limiting are honoured, and an actively banned host is refused.
+func (p *PeerServer) allowInboundHandshake(remoteAddr string) bool {
+	host := extractHost(remoteAddr)
+	if p.isRateLimitDisabled() || p.isWhitelisted(host) {
+		return true
+	}
+	p.banLock.Lock()
+	banned := p.isIPActivelyBannedLocked(host, time.Now())
+	p.banLock.Unlock()
+	if banned {
+		return false
+	}
+	return p.AllowMessage(inboundHandshakeKeyPrefix+extractSubnet(remoteAddr), inboundHandshakeMsgType)
 }
 
 const (
@@ -3007,8 +3043,29 @@ func (p *PeerServer) AllowMessage(ip string, msgType string) bool {
 			lastForkpointRefill:  now,
 			mempoolTokens:        6.0,
 			lastMempoolRefill:    now,
+			handshakeTokens:      inboundHandshakeBurst,
+			lastHandshakeRefill:  now,
 		}
 		p.rateTrackers[ip] = tracker
+	}
+
+	// Inbound connection attempts per subnet (see allowInboundHandshake), checked before any TLS work (ML-KEM and signature
+	// operations make the handshake the most expensive step for an unauthenticated peer).
+	// Exhaustion only refuses the connection; it does not add ban score, so NAT'd honest peers
+	// recover as the bucket refills.
+	if msgType == inboundHandshakeMsgType {
+		if elapsed := now.Sub(tracker.lastHandshakeRefill).Seconds(); elapsed > 0 {
+			tracker.handshakeTokens += elapsed * inboundHandshakeRefillPerSec
+			if tracker.handshakeTokens > inboundHandshakeBurst {
+				tracker.handshakeTokens = inboundHandshakeBurst
+			}
+			tracker.lastHandshakeRefill = now
+		}
+		if tracker.handshakeTokens < 1.0 {
+			return false
+		}
+		tracker.handshakeTokens -= 1.0
+		return true
 	}
 
 	// Dedicated token bucket for NEW_BLOCK messages during block sync [T1]
@@ -4400,6 +4457,15 @@ func (p *PeerServer) runCycle(cycle *serverCycle, listener net.Listener) {
 		requireTLS := p.RequireTLS
 		p2pTOFU := p.P2PTOFU
 		p.Lock.RUnlock()
+
+		if !p.allowInboundHandshake(conn.RemoteAddr().String()) {
+			debugLogf("[P2P][CONN] inbound rejected remote=%s reason=handshake-rate", conn.RemoteAddr().String())
+			cycle.connsMu.Lock()
+			delete(cycle.activeConns, conn)
+			cycle.connsMu.Unlock()
+			_ = conn.Close()
+			continue
+		}
 
 		remoteSubnet := extractSubnet(conn.RemoteAddr().String())
 		releaseSlot, rejectMsg, ok := p.tryReserveInboundSlot(remoteSubnet, disableSubnetLimit)
