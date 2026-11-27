@@ -74,6 +74,7 @@ To prevent conflation between speculative design iterations and production-ready
 - **[`../governance/TREASURY_MIGRATION_PLAN.md`](../governance/TREASURY_MIGRATION_PLAN.md):** Canonical 1,000,000 ARMX treasury, miner migration, and liquidity framework.
 - **[`tokenomics/mining-accumulation-plan.md`](tokenomics/mining-accumulation-plan.md):** Developer early-mining operational policy (blocks 1..16,667).
 - **[`consensus/mainnet-pow-activation.md`](consensus/mainnet-pow-activation.md):** Proposal and analysis for future Mainnet PoW activation.
+- **[`consensus/mldsa65-multisig-custody.md`](consensus/mldsa65-multisig-custody.md):** ML-DSA-65 M-of-N multisig custody (`sig_alg` `0x02`): descriptor, witness, activation, and the air-gapped `armwallet multisig` flow.
 - **[`../CONSENSUS_AND_NETWORK.md`](../CONSENSUS_AND_NETWORK.md):** Canonical Layer-1 mathematical consensus specification.
 - **[`../NODE_OPERATIONS.md`](../NODE_OPERATIONS.md):** Operational guidance for running Testnet nodes.
 - **[`../releases/v1.0.12.md`](../releases/v1.0.12.md):** Release notes for Core v1.0.12 (Desktop GUI v2 `"Waiting for Sync"`, WebView2, System Tray, Node Sync Gate `HTTP 503`, integrated CPU multi-thread optimization, Stratum TLS, additive Node RPC, and Go `1.27.4`).
